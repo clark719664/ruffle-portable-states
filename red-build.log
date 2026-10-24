@@ -1,0 +1,426 @@
+    Updating crates.io index
+    Updating git repository `https://github.com/ruffle-rs/rust-flash-lso`
+    Updating git repository `https://github.com/ruffle-rs/jpegxr`
+    Updating git repository `https://github.com/ruffle-rs/nellymoser`
+    Updating git repository `https://github.com/ruffle-rs/regras3`
+    Updating git repository `https://github.com/ruffle-rs/h263-rs`
+    Updating git repository `https://github.com/ruffle-rs/nihav-vp6`
+    Updating git repository `https://github.com/ruffle-rs/api-report`
+ Downloading crates ...
+  Downloaded clap_lex v1.1.1
+  Downloaded color_quant v1.1.0
+  Downloaded async-channel v2.5.0
+  Downloaded bit-vec v0.9.1
+  Downloaded byteorder-lite v0.1.0
+  Downloaded crc v3.4.0
+  Downloaded codespan-reporting v0.13.1
+  Downloaded bit-set v0.10.0
+  Downloaded bytemuck_derive v1.12.1
+  Downloaded core_detect v1.0.0
+  Downloaded concurrent-queue v2.5.0
+  Downloaded convert_case v0.11.0
+  Downloaded crc-catalog v2.5.0
+  Downloaded annotate-snippets v0.12.16
+  Downloaded bytemuck v1.25.2
+  Downloaded chardetng v0.1.17
+  Downloaded bitstream-io v4.10.0
+  Downloaded bstr v1.13.1
+  Downloaded crossbeam-utils v0.8.21
+  Downloaded encoding_rs v0.8.42
+  Downloaded enum-map-derive v0.17.0
+  Downloaded enum-map v2.7.3
+  Downloaded enumset v1.1.13
+  Downloaded enumset_derive v0.15.0
+  Downloaded event-listener-strategy v0.5.4
+  Downloaded fax v0.2.7
+  Downloaded euclid v0.22.14
+  Downloaded event-listener v5.4.2
+  Downloaded fluent-bundle v0.16.0
+  Downloaded fluent-langneg v0.13.1
+  Downloaded float_next_after v1.0.0
+  Downloaded fluent-template-macros v0.15.1
+  Downloaded flume v0.11.1
+  Downloaded fluent-syntax v0.12.0
+  Downloaded flate2 v1.1.9
+  Downloaded fluent-templates v0.15.1
+  Downloaded gc-arena v0.7.0
+  Downloaded gc-arena-derive v0.7.0
+  Downloaded gif v0.14.2
+  Downloaded half v2.7.1
+  Downloaded guillotiere v0.7.0
+  Downloaded globset v0.4.19
+  Downloaded id3 v1.17.2
+  Downloaded idna_adapter v1.0.0
+  Downloaded image v0.25.10
+  Downloaded ignore v0.4.32
+  Downloaded intl_pluralrules v7.0.2
+  Downloaded intl-memoizer v0.5.3
+  Downloaded itertools v0.14.0
+  Downloaded jpeg-decoder v0.3.2
+  Downloaded lyon v1.0.1
+  Downloaded lyon_algorithms v1.0.5
+  Downloaded lzma-rs v0.3.0
+  Downloaded lyon_geom v1.0.6
+  Downloaded lyon_path v1.0.7
+  Downloaded lyon_tessellation v1.0.15
+  Downloaded moxcms v0.8.1
+  Downloaded no_std_io2 v0.9.4
+  Downloaded naga-types v30.0.1
+  Downloaded multiversion_no_op v1.0.0
+  Downloaded nom v8.0.0
+  Downloaded naga v30.0.1
+  Downloaded num-complex v0.4.6
+  Downloaded num-integer v0.1.47
+  Downloaded primal-check v0.3.4
+  Downloaded proc-macro-hack v0.5.20+deprecated
+  Downloaded quick-xml v0.37.5
+  Downloaded quick-error v2.0.1
+  Downloaded pxfm v0.1.30
+  Downloaded rascal v0.3.6
+  Downloaded realfft v3.5.0
+  Downloaded rustc-hash v1.1.0
+  Downloaded rustfft v6.4.1
+  Downloaded safe_arch v1.2.0
+  Downloaded self_cell v1.3.0
+  Downloaded simple_asn1 v0.6.4
+  Downloaded slotmap v1.1.1
+  Downloaded smallvec v1.16.3
+  Downloaded strength_reduce v0.2.4
+  Downloaded swf v0.3.0
+  Downloaded syn v3.0.9
+  Downloaded thiserror v2.0.18
+  Downloaded thiserror-impl v2.0.18
+  Downloaded tiff v0.11.3
+  Downloaded transpose v0.2.3
+  Downloaded unic-langid-macros v0.9.6
+  Downloaded type-map v0.5.1
+  Downloaded unic-langid v0.9.6
+  Downloaded unic-langid-macros-impl v0.9.6
+  Downloaded ttf-parser v0.25.1
+  Downloaded unic-langid-impl v0.9.6
+  Downloaded unicode-width v0.2.2
+  Downloaded weezl v0.1.12
+  Downloaded wide v1.7.1
+  Downloaded zerocopy v0.8.57
+  Downloaded zerocopy-derive v0.8.57
+  Downloaded zune-core v0.5.3
+  Downloaded zune-jpeg v0.5.15
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling syn v2.0.119
+   Compiling autocfg v1.5.1
+   Compiling syn v3.0.9
+   Compiling memchr v2.8.3
+   Compiling libm v0.2.16
+   Compiling num-traits v0.2.19
+   Compiling cfg-if v1.0.4
+   Compiling thiserror-impl v2.0.18
+   Compiling adler2 v2.0.1
+   Compiling crc32fast v1.5.2
+   Compiling log v0.4.34
+   Compiling equivalent v1.0.2
+   Compiling rustversion v1.0.23
+   Compiling windows-link v0.2.1
+   Compiling thiserror v2.0.18
+   Compiling windows-sys v0.61.2
+   Compiling bitflags v2.13.2
+   Compiling encoding_rs v0.8.42
+   Compiling time-core v0.1.9
+   Compiling num-conv v0.2.2
+   Compiling time-macros v0.2.32
+   Compiling simdutf8 v0.1.5
+   Compiling deranged v0.5.8
+   Compiling byteorder v1.5.0
+   Compiling powerfmt v0.2.0
+   Compiling multiversion_no_op v1.0.0
+   Compiling core_detect v1.0.0
+   Compiling time v0.3.55
+   Compiling aho-corasick v1.1.5
+   Compiling enum-map-derive v0.17.0
+   Compiling num-derive v0.4.2
+   Compiling crc-catalog v2.5.0
+   Compiling allocator-api2 v0.2.21
+   Compiling scopeguard v1.2.0
+   Compiling foldhash v0.2.0
+   Compiling crc v3.4.0
+   Compiling enum-map v2.7.3
+   Compiling no_std_io2 v0.9.4
+   Compiling displaydoc v0.2.7
+   Compiling simd-adler32 v0.3.10
+   Compiling proc-macro-hack v0.5.20+deprecated
+   Compiling tinystr v0.8.4
+   Compiling bitstream-io v4.10.0
+   Compiling lzma-rs v0.3.0
+   Compiling num-integer v0.1.47
+   Compiling crossbeam-utils v0.8.21
+   Compiling unicode-width v0.2.2
+   Compiling pin-project-lite v0.2.17
+   Compiling unic-langid-impl v0.9.6
+   Compiling miniz_oxide v0.8.9
+   Compiling hashbrown v0.17.1
+   Compiling winapi-util v0.1.11
+   Compiling regex-syntax v0.8.11
+   Compiling arrayvec v0.7.8
+   Compiling zerocopy v0.8.57
+   Compiling anstyle v1.0.14
+   Compiling regex-automata v0.4.18
+   Compiling same-file v1.0.6
+   Compiling indexmap v2.14.2
+   Compiling flate2 v1.1.9
+   Compiling unic-langid-macros-impl v0.9.6
+   Compiling euclid v0.22.14
+   Compiling zerocopy-derive v0.8.57
+   Compiling smallvec v1.16.3
+   Compiling serde_core v1.0.229
+   Compiling num-bigint v0.4.8
+   Compiling unic-langid-macros v0.9.6
+   Compiling walkdir v2.5.0
+   Compiling bytemuck_derive v1.12.1
+   Compiling once_cell v1.21.4
+   Compiling fnv v1.0.7
+   Compiling once_cell_polyfill v1.70.2
+   Compiling utf8parse v0.2.2
+   Compiling crossbeam-epoch v0.9.21
+   Compiling anstyle-parse v1.0.0
+   Compiling anstyle-wincon v3.0.11
+   Compiling bytemuck v1.25.2
+   Compiling simple_asn1 v0.6.4
+   Compiling unic-langid v0.9.6
+   Compiling half v2.7.1
+   Compiling lyon_geom v1.0.6
+   Compiling anstyle-query v1.1.5
+   Compiling bstr v1.13.1
+   Compiling colorchoice v1.0.5
+   Compiling crossbeam-deque v0.8.8
+   Compiling serde v1.0.229
+   Compiling anyhow v1.0.104
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling ident_case v1.0.1
+   Compiling cfg_aliases v0.2.2
+   Compiling version_check v0.9.5
+   Compiling slotmap v1.1.1
+   Compiling naga v30.0.1
+   Compiling darling_core v0.21.3
+   Compiling anstream v1.0.0
+   Compiling lyon_path v1.0.7
+   Compiling serde_derive v1.0.229
+   Compiling bit-vec v0.9.1
+   Compiling weezl v0.1.12
+   Compiling clap_lex v1.1.1
+   Compiling rustc-hash v1.1.0
+   Compiling heck v0.5.0
+   Compiling strsim v0.11.1
+   Compiling futures-core v0.3.34
+   Compiling zune-core v0.5.3
+   Compiling zune-jpeg v0.5.15
+   Compiling clap_builder v4.6.7
+   Compiling clap_derive v4.6.7
+   Compiling naga-types v30.0.1
+   Compiling bit-set v0.10.0
+   Compiling darling_macro v0.21.3
+   Compiling swf v0.3.0
+   Compiling safe_arch v1.2.0
+   Compiling tracing-core v0.1.36
+   Compiling annotate-snippets v0.12.16
+   Compiling codespan-reporting v0.13.1
+   Compiling lock_api v0.4.14
+   Compiling tracing-attributes v0.1.31
+   Compiling pxfm v0.1.30
+   Compiling float_next_after v1.0.0
+   Compiling quick-error v2.0.1
+   Compiling unicode-segmentation v1.13.3
+   Compiling fax v0.2.7
+   Compiling rustc-hash v2.1.3
+   Compiling futures-sink v0.3.34
+   Compiling winnow v1.0.4
+   Compiling rascal v0.3.6
+   Compiling futures-channel v0.3.34
+   Compiling type-map v0.5.1
+   Compiling tiff v0.11.3
+   Compiling convert_case v0.11.0
+   Compiling lyon_tessellation v1.0.15
+   Compiling moxcms v0.8.1
+   Compiling tracing v0.1.44
+   Compiling spin v0.9.9
+   Compiling wide v1.7.1
+   Compiling darling v0.21.3
+   Compiling asc v0.7.1 (<ruffle-checkout>\tools\asc)
+   Compiling swf v0.3.0 (<ruffle-checkout>\swf)
+   Compiling clap v4.6.7
+   Compiling lyon_algorithms v1.0.5
+   Compiling globset v0.4.19
+   Compiling regex v1.13.1
+   Compiling fdeflate v0.3.7
+   Compiling futures-macro v0.3.34
+   Compiling synstructure v0.13.2
+   Compiling slab v0.4.12
+   Compiling idna_adapter v1.0.0
+   Compiling percent-encoding v2.3.2
+   Compiling futures-io v0.3.34
+   Compiling zmij v1.0.23
+   Compiling byteorder-lite v0.1.0
+   Compiling utf8_iter v1.0.4
+   Compiling parking v2.2.1
+   Compiling strength_reduce v0.2.4
+   Compiling color_quant v1.1.0
+   Compiling getrandom v0.4.3
+   Compiling ruffle_wstr v0.7.1 (<ruffle-checkout>\wstr)
+   Compiling futures-task v0.3.34
+   Compiling futures-util v0.3.34
+   Compiling gif v0.14.2
+   Compiling transpose v0.2.3
+   Compiling event-listener v5.4.2
+   Compiling idna v1.1.0
+   Compiling image v0.25.10
+   Compiling form_urlencoded v1.2.2
+   Compiling gc-arena-derive v0.7.0
+   Compiling png v0.18.1
+   Compiling build_playerglobal v0.7.1 (<ruffle-checkout>\core\build_playerglobal)
+   Compiling ignore v0.4.32
+   Compiling lyon v1.0.1
+   Compiling enumset_derive v0.15.0
+   Compiling h263-rs-yuv v0.1.0 (https://github.com/ruffle-rs/h263-rs?rev=27ee833ca97aadd2a14cf0b3b4ec8b53f31ff6bd#27ee833c)
+   Compiling naga-agal v0.7.1 (<ruffle-checkout>\render\naga-agal)
+   Compiling flume v0.11.1
+   Compiling intl-memoizer v0.5.3
+   Compiling fluent-langneg v0.13.1
+   Compiling intl_pluralrules v7.0.2
+   Compiling guillotiere v0.7.0
+   Compiling primal-check v0.3.4
+   Compiling hashbrown v0.16.1
+   Compiling pixel_bender v0.7.1 (<ruffle-checkout>\render\pixel_bender)
+   Compiling fluent-syntax v0.12.0
+   Compiling num-complex v0.4.6
+   Compiling jpeg-decoder v0.3.2
+   Compiling rand_core v0.10.1
+   Compiling self_cell v1.3.0
+   Compiling serde_json v1.0.154
+   Compiling fluent-bundle v0.16.0
+   Compiling ruffle_render v0.7.1 (<ruffle-checkout>\render)
+   Compiling rustfft v6.4.1
+   Compiling regress v0.10.3 (https://github.com/ruffle-rs/regras3?rev=6d48179d6bd448f2cc66b76352c9f048dde968d1#6d48179d)
+   Compiling fluent-template-macros v0.15.1
+   Compiling enumset v1.1.13
+   Compiling ruffle_core v0.7.1 (<ruffle-checkout>\core)
+   Compiling gc-arena v0.7.0
+   Compiling url v2.5.8
+   Compiling event-listener-strategy v0.5.4
+   Compiling futures-executor v0.3.34
+   Compiling concurrent-queue v2.5.0
+   Compiling nom v8.0.0
+   Compiling quick-xml v0.37.5
+   Compiling ruffle_macros v0.7.1 (<ruffle-checkout>\core\macros)
+   Compiling itoa v1.0.18
+   Compiling either v1.19.0
+   Compiling itertools v0.14.0
+   Compiling ruffle_common v0.7.1 (<ruffle-checkout>\core\common)
+   Compiling flash-lso v0.6.0 (https://github.com/ruffle-rs/rust-flash-lso?rev=61b717248aae853a4f5d8a103eba704268d286c8#61b71724)
+   Compiling async-channel v2.5.0
+   Compiling futures v0.3.34
+   Compiling fluent-templates v0.15.1
+   Compiling realfft v3.5.0
+   Compiling ruffle_video v0.7.1 (<ruffle-checkout>\video)
+   Compiling rand v0.10.2
+   Compiling chardetng v0.1.17
+   Compiling id3 v1.17.2
+   Compiling flv-rs v0.7.1 (<ruffle-checkout>\flv)
+   Compiling chrono v0.4.45
+   Compiling ttf-parser v0.25.1
+   Compiling web-time v1.1.0
+error[E0425]: cannot find type `HeapSnapshot` in this scope
+  --> core\src\avm1\object\script_object\portable_snapshot_tests.rs:28:20
+   |
+28 |         let saved: HeapSnapshot = serde_json::from_slice(&bytes).unwrap();
+   |                    ^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `HeapSnapshot` in this scope
+  --> core\src\avm1\object\script_object\portable_snapshot_tests.rs:70:24
+   |
+70 |         let malformed: HeapSnapshot = serde_json::from_value(json).unwrap();
+   |                        ^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `HeapSnapshot` in this scope
+  --> core\src\avm1\object\script_object\portable_snapshot_tests.rs:74:24
+   |
+74 |         let malformed: HeapSnapshot = serde_json::from_value(json).unwrap();
+   |                        ^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: cannot find type `HeapSnapshot` in this scope
+  --> core\src\avm1\object\script_object\portable_snapshot_tests.rs:24:29
+   |
+24 |         serde_json::to_vec(&HeapSnapshot::capture(root).unwrap()).unwrap()
+   |                             ^^^^^^^^^^^^ use of undeclared type `HeapSnapshot`
+
+error[E0433]: cannot find type `HeapSnapshot` in this scope
+  --> core\src\avm1\object\script_object\portable_snapshot_tests.rs:36:27
+   |
+36 |         assert_eq!(saved, HeapSnapshot::capture(root).unwrap());
+   |                           ^^^^^^^^^^^^ use of undeclared type `HeapSnapshot`
+
+error[E0433]: cannot find type `HeapSnapshot` in this scope
+  --> core\src\avm1\object\script_object\portable_snapshot_tests.rs:48:17
+   |
+48 |         assert!(HeapSnapshot::capture(root).is_err());
+   |                 ^^^^^^^^^^^^ use of undeclared type `HeapSnapshot`
+
+error[E0433]: cannot find type `HeapSnapshot` in this scope
+  --> core\src\avm1\object\script_object\portable_snapshot_tests.rs:52:17
+   |
+52 |         assert!(HeapSnapshot::capture(root).is_err());
+   |                 ^^^^^^^^^^^^ use of undeclared type `HeapSnapshot`
+
+error[E0433]: cannot find type `HeapSnapshot` in this scope
+  --> core\src\avm1\object\script_object\portable_snapshot_tests.rs:61:17
+   |
+61 |         assert!(HeapSnapshot::capture(root).is_err());
+   |                 ^^^^^^^^^^^^ use of undeclared type `HeapSnapshot`
+
+error[E0433]: cannot find type `HeapSnapshot` in this scope
+  --> core\src\avm1\object\script_object\portable_snapshot_tests.rs:64:17
+   |
+64 |         assert!(HeapSnapshot::capture(root).is_err());
+   |                 ^^^^^^^^^^^^ use of undeclared type `HeapSnapshot`
+
+error[E0433]: cannot find type `HeapSnapshot` in this scope
+  --> core\src\avm1\object\script_object\portable_snapshot_tests.rs:67:24
+   |
+67 |         let snapshot = HeapSnapshot::capture(root).unwrap();
+   |                        ^^^^^^^^^^^^ use of undeclared type `HeapSnapshot`
+
+error[E0433]: cannot find type `HeapSnapshot` in this scope
+  --> core\src\avm1\object\script_object\portable_snapshot_tests.rs:82:17
+   |
+82 |         assert!(HeapSnapshot::capture(root).is_err());
+   |                 ^^^^^^^^^^^^ use of undeclared type `HeapSnapshot`
+
+error[E0599]: no method named `snapshot_state` found for struct `avm_rng::AvmRng` in the current scope
+  --> core\src\avm_rng.rs:77:26
+   |
+13 | pub struct AvmRng {
+   | ----------------- method `snapshot_state` not found for this struct
+...
+77 |         assert!(original.snapshot_state().is_none());
+   |                          ^^^^^^^^^^^^^^ method not found in `avm_rng::AvmRng`
+
+error[E0599]: no method named `snapshot_state` found for struct `avm_rng::AvmRng` in the current scope
+  --> core\src\avm_rng.rs:81:30
+   |
+13 | pub struct AvmRng {
+   | ----------------- method `snapshot_state` not found for this struct
+...
+81 |         let state = original.snapshot_state().expect("initialized RNG");
+   |                              ^^^^^^^^^^^^^^ method not found in `avm_rng::AvmRng`
+
+error[E0599]: no associated function or constant named `from_snapshot_state` found for struct `avm_rng::AvmRng` in the current scope
+  --> core\src\avm_rng.rs:84:36
+   |
+13 | pub struct AvmRng {
+   | ----------------- associated function or constant `from_snapshot_state` not found for this struct
+...
+84 |         let mut restored = AvmRng::from_snapshot_state(state);
+   |                                    ^^^^^^^^^^^^^^^^^^^ associated function or constant not found in `avm_rng::AvmRng`
+
+Some errors have detailed explanations: E0425, E0433, E0599.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `ruffle_core` (lib test) due to 14 previous errors

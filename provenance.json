@@ -1,0 +1,15 @@
+{
+  "upstream": "https://github.com/ruffle-rs/ruffle",
+  "base_commit": "045db00b393aed22a462d29cb6c25efa26be90a0",
+  "local_branch": "research/avm1-snapshot-graph",
+  "patch": "portable-avm1-prerequisites.patch",
+  "patch_sha256": "BFD87E566E2E273B5E9F3168F650D6860557E7A27E55A31CB271B3FDC5CF755F",
+  "test_command": "cargo test -p ruffle_core --lib portable_snapshot --no-default-features -j 1",
+  "exit_code": 0,
+  "selected_tests_passed": 7,
+  "selected_tests_failed": 0,
+  "filtered_out": 125,
+  "status": "prerequisites only; running SWF checkpoint unsupported",
+  "rustc": "1.99.0 (b940084d7 2026-09-28)",
+  "cargo": "1.99.0 (5f94df478 2026-08-27)"
+}

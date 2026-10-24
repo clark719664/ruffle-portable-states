@@ -1,0 +1,15 @@
+   Compiling ruffle_core v0.7.1 (<ruffle-checkout>\core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.97s
+     Running unittests src\lib.rs (target\debug\deps\ruffle_core-5d89497700d6581e.exe)
+
+running 7 tests
+test avm1::object::script_object::portable_snapshot_tests::portable_snapshot_process_child ... ok
+test avm_rng::portable_snapshot_tests::portable_snapshot_rng_continues_without_reseeding ... ok
+test avm1::object::script_object::portable_snapshot_tests::portable_snapshot_rejects_native_and_virtual_properties ... ok
+test avm1::object::script_object::portable_snapshot_tests::portable_snapshot_rejects_watchers_interfaces_and_corrupt_references ... ok
+test avm1::object::script_object::portable_snapshot_tests::portable_snapshot_roundtrip_fresh_arena_preserves_graph_and_bits ... ok
+test avm1::object::script_object::portable_snapshot_tests::portable_snapshot_survives_producer_exit_and_fresh_process_restore ... ok
+test avm1::object::script_object::portable_snapshot_tests::portable_snapshot_rejects_actual_player_root_instead_of_claiming_checkpoint ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 0.14s
+

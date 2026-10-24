@@ -1,0 +1,12 @@
+# Progress
+- Source cloned and commit pinned.
+- No AGENTS.md found in checkout.
+- Existing AVM1 Object is a gc-arena graph with native payloads, descriptors, watchers, and interfaces.
+- Scope selected: fail-closed portable ordinary-object graph codec, not complete execution snapshot.
+- Local llm unavailable per parent verification; continue without it.
+- Red baseline: cargo core test compilation failed with 14 errors for missing HeapSnapshot / RNG snapshot APIs, as expected; log exported.
+- Added real Object heap codec and RNG state methods after expected red compile failure.
+- Green compilation first found a test fixture UTF16 Vec element-type ambiguity; fixed with explicit u16.
+- Native/MovieClip Player roots intentionally fail rather than producing incomplete execution saves.
+- Source is on branch research/avm1-snapshot-graph; new source files marked intent-to-add for complete patch export.
+- Final targeted cargo run exited0:7 selected tests passed,0 failed,125 filtered out; includes subprocess helper entry and real producer-exit/consumer-restore test. Formatting and git diff whitespace checks passed. Patch validated against a temporary HEAD index with git apply --cached --check.

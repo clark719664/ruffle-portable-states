@@ -1,0 +1,27 @@
+name: Pinned Ruffle heap prerequisite tests
+on: [workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  prerequisites:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.99.0'
+      - name: Fetch exact upstream base and apply patch
+        shell: pwsh
+        run: |
+          git clone https://github.com/ruffle-rs/ruffle.git work/ruffle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C work/ruffle checkout 045db00b393aed22a462d29cb6c25efa26be90a0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C work/ruffle apply --check ../../portable-avm1-prerequisites.patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C work/ruffle apply ../../portable-avm1-prerequisites.patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Ordinary heap prerequisite tests only
+        working-directory: work/ruffle
+        run: cargo test -p ruffle_core --lib portable_snapshot --no-default-features -j 1
