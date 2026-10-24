@@ -1,0 +1,36 @@
+   Compiling ruffle_core v0.7.1 (<ruffle-checkout>\core)
+warning: unused import: `super::*`
+ --> core\src\player\portable_snapshot\tests.rs:1:5
+  |
+1 | use super::*;
+  |     ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0433]: cannot find type `SealedAvm1Player` in this scope
+  --> core\src\player\portable_snapshot\tests.rs:49:24
+   |
+49 |     let mut original = SealedAvm1Player::new(&fixture(None), 12345).unwrap();
+   |                        ^^^^^^^^^^^^^^^^ use of undeclared type `SealedAvm1Player`
+
+error[E0433]: cannot find type `SealedAvm1Player` in this scope
+  --> core\src\player\portable_snapshot\tests.rs:52:24
+   |
+52 |     let mut restored = SealedAvm1Player::restore(&saved).unwrap();
+   |                        ^^^^^^^^^^^^^^^^ use of undeclared type `SealedAvm1Player`
+
+error[E0433]: cannot find type `SealedAvm1Player` in this scope
+  --> core\src\player\portable_snapshot\tests.rs:66:17
+   |
+66 |         assert!(SealedAvm1Player::new(&fixture(Some(action)), 1).is_err());
+   |                 ^^^^^^^^^^^^^^^^ use of undeclared type `SealedAvm1Player`
+
+error[E0433]: cannot find type `SealedAvm1Player` in this scope
+  --> core\src\player\portable_snapshot\tests.rs:68:13
+   |
+68 |     assert!(SealedAvm1Player::new(&fixture(None), 0).is_err());
+   |             ^^^^^^^^^^^^^^^^ use of undeclared type `SealedAvm1Player`
+
+For more information about this error, try `rustc --explain E0433`.
+warning: `ruffle_core` (lib test) generated 1 warning
+error: could not compile `ruffle_core` (lib test) due to 4 previous errors; 1 warning emitted

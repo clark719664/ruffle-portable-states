@@ -1,43 +1,70 @@
-# Ruffle snapshot prerequisite patch
+# Actual AVM1 game checkpoint: restricted, end to end
 
-This is working serializer groundwork inside upstream Ruffle, **not a completed save-state feature**. It cannot save or resume a running SWF. A regression explicitly verifies that a real Player root is rejected.
+This patch checkpoints a real running SWF in Ruffle, exits its producer process, restores into a fresh Player/GC arena, and continues with identical input-dependent behavior. It does not replay the earlier frames.
 
-## Implemented
-- Actual AVM1 ordinary-object graph capture and fresh gc-arena restoration, including cycles, shared references, property order/attributes, exact floating-point bits, and arbitrary UTF-16 units.
-- Portable, versioned JSON representation containing object IDs rather than memory addresses.
-- Fail-closed rejection of native payloads/functions/MovieClips, virtual properties, watchers, and interface lists. Prototype links are traversed, so standard builtin prototype chains reach native functions and are rejected too.
-- Initialized AVM RNG state extraction/restoration without clock reseeding. Zero/uninitialized state cannot be captured by this API.
-- A producer-process-exit/fresh-consumer-process regression for the ordinary heap graph only; this is not a movie continuation test.
+The included original collect-square fixture uses real Flash `Key.isDown` calls: left/right arrows move a cyan avatar, overlap with the gold target increments a counter, and Ruffle's AVM RNG chooses the target's next position. The movie loops every 240 frames. No external game or art assets are used.
 
-## Provenance and applying
-Upstream: https://github.com/ruffle-rs/ruffle
-Base commit: 045db00b393aed22a462d29cb6c25efa26be90a0
-Local branch: research/avm1-snapshot-graph
-This repository publishes a research patch against that pinned base. No upstream pull request has been made.
+**This is a deliberately restricted checkpoint API, not arbitrary Flash game save-state support.** A private `SealedAvm1Player` validates the movie before executing it. Unsupported tags, opcodes, calls, state and malformed snapshots return errors.
 
-Clone Ruffle separately and check out the pinned base, then apply the patch from this repository:
+## What is preserved
 
-```powershell
-git clone https://github.com/ruffle-rs/ruffle.git ruffle
-cd ruffle
-git checkout 045db00b393aed22a462d29cb6c25efa26be90a0
-git apply --check ../ruffle-portable-states/portable-avm1-prerequisites.patch
-git apply ../ruffle-portable-states/portable-avm1-prerequisites.patch
+- The exact immutable SWF bytes and protected numeric/Boolean root properties, using the earlier AVM1 heap codec.
+- Initialized RNG state and held left/right arrow keys. Keys are delivered through real Ruffle input events.
+- Root/sprite frame positions, tag-stream cursors, playback flags, fixed display structure, instance names/depths, transforms and caches, and exact AVM1 execution-list order.
+- Stage background and the immutable builtin constant-pool binding. Native MovieClip objects and builtin prototypes are rebound in the fresh arena.
+
+The ordinary-object codec still separately preserves cycles, aliases, descriptors, UTF-16 units and f64 bits. Arbitrary object graphs/functions are **not** admitted into the executing sealed movie subset.
+
+## Supported movie contract
+
+Uncompressed SWF 7 up to 1 MiB; solid-filled shapes; initial static placements; one-frame sprites containing shape leaves; fixed `clip_` instance names; protected `s_` numeric state; numeric arithmetic/comparisons; trace; RNG; x/y display properties; Stop/Play; and the exact readonly `Key.isDown(37/39)` native calls. Operand validation requires every action block to finish with an empty stack. Frame capture requires no queued actions, callbacks, operands, register contents, or halted VM.
+
+Unsupported examples: ActionScript functions/scopes, general method/member calls, mutable globals/prototypes, objects/arrays in movie state, dynamic placements, nesting beyond the supported sprite/shape structure, fonts/text, bitmaps, masks/filters, sound/video, timers, network/loaders, external callbacks, wall-clock APIs, and other keyboard/mouse APIs. Frame stepping is explicit; there is no real-time tick-clock claim.
+
+Restoration checks display identities against a static placement manifest derived from the same SWF. Snapshot fields cannot add/rename display instances to bypass the source capability policy. Transport is versioned and bounded at 8 MiB. This experimental format is pinned to the source commit below, not a stable public compatibility promise.
+
+## Reproduce
+
+Base: `ruffle-rs/ruffle` commit `045db00b393aed22a462d29cb6c25efa26be90a0`.
+
+From this repository root:
+
+```sh
+git clone https://github.com/ruffle-rs/ruffle.git work/ruffle
+git -C work/ruffle checkout 045db00b393aed22a462d29cb6c25efa26be90a0
+git -C work/ruffle apply --check ../../portable-avm1-checkpoint.patch
+git -C work/ruffle apply ../../portable-avm1-checkpoint.patch
+cd work/ruffle
 cargo test -p ruffle_core --lib portable_snapshot --no-default-features -j 1
 ```
 
-Rust/Cargo 1.99.0 and Windows MSVC were used. Keep builds at one job on this 16GB host. The patch makes no desktop/frontend changes. The base's MIT/Apache-2.0 licensing applies.
+The test module is the executable producer/consumer harness and SWF source generator. The parent test launches the producer, waits for its successful exit, and only then launches the consumer. Set `RUFFLE_PORTABLE_EXPORT` to an absolute directory to keep its artifacts. PowerShell example:
 
-## Remaining before a real execution checkpoint
-MovieClip and display-list/timeline/native state; ActionScript function bodies, captured scopes and builtin bindings; interpreter globals/registers/constant pools; frame-boundary guards; timers, queues, input and virtual clock; SWF identity/assets; and backend-resource rebinding or explicit rejection policies. See SNAPSHOT_PLAN.md for the source-grounded inventory. No replay is used by this code.
+```powershell
+$env:RUFFLE_PORTABLE_EXPORT = (Join-Path (Get-Location) 'checkpoint-demo')
+cargo test -p ruffle_core --lib portable_snapshot --no-default-features -j 1
+```
 
-The heap decoder validates structure before allocating GC objects, but deserialization input size must be bounded by its caller; it is not a hardened hostile-input container. Internal Property IDs are freshly assigned; watchers (which depend on property behavior) are unsupported. Memory-layout and cross-platform compatibility have not been tested beyond the address-free format and fresh Windows processes.
+An individual phase can also be run through the compiled test executable with `RUFFLE_SEALED_DIR` set to that directory, `RUFFLE_SEALED_MODE=produce` or `consume`, and arguments:
 
-## Validation result
-`cargo test -p ruffle_core --lib portable_snapshot --no-default-features -j 1` exited 0: **7 selected tests passed, 0 failed, 125 filtered out**. The selection includes a subprocess helper test; the parent process portability test additionally executes producer and consumer subprocesses. `green-test.log` is the final output; `red-build.log` records missing-API failures before implementation. The full core suite and a real SWF continuation test were not run.
+```text
+--exact player::portable_snapshot::tests::portable_snapshot_process_helper --nocapture
+```
 
-Formatting, whitespace validation, and applying the complete patch against a temporary index of the pinned upstream base all passed. Patch SHA-256: `BFD87E566E2E273B5E9F3168F650D6860557E7A27E55A31CB271B3FDC5CF755F`.
+## Evidence and files
 
-Publication note: the retained build logs replace the original local checkout path with <ruffle-checkout>; test outcomes are unchanged. The patch and additions use Ruffle's MIT-or-Apache-2.0 terms; the upstream license and notices are retained in LICENSE.md.
+- `demo/interactive-world.swf`: generated playable fixture; use left/right arrows in Ruffle.
+- `demo/checkpoint.json`: actual checkpoint after four completed frames with right arrow held.
+- `demo/checkpoint.svg`, `demo/restored.svg`: before/after views from actual Ruffle draw commands, captured by a test rendering backend. These are vector-command evidence, not GPU pixel comparisons.
+- `demo/expected-trace.json`, `demo/expected-final.json`, `demo/expected-render.txt`: uninterrupted producer continuation reference.
+- `demo/verified.txt`: written only after the fresh consumer matches trace, complete checkpoint and actual draw-command digest.
+- `fixture-source.rs`: original fixture generator excerpt; executable version is in the patch's test module.
+- `green-test.log`, `provenance.json`: final executed checks and exact artifact hashes.
 
-A manual GitHub Actions workflow reproduces the pinned research checks. It has not been run on GitHub at initial publication; the recorded results above came from local runs.
+The suite also tests held keys, timeline looping and stopped playback, invalid formats/native state/identities/cursors, rejected instructions, and transport limits. It is a targeted suite; no full Ruffle regression-suite or arbitrary downloaded-game claim is made.
+
+The fixture and generator are offered under the same MIT OR Apache-2.0 terms as the upstream project. `LICENSE.md` is copied from the pinned upstream. No third-party game rights are implicated.
+
+Final recorded run: **17 selected tests passed, 0 failed, 125 filtered out**, including subprocess helpers. An independent reviewer reran the frozen binary: all 17 tests passed, exit 0, with no unresolved blocker for the sealed subset. See `independent-review.md`. Use portable-avm1-checkpoint.patch for this result. The earlier prerequisite-only publication remains available in Git history.
+
+Publication note: retained human-readable build logs replace the original local checkout prefix with <ruffle-checkout>. Checksum-protected patches and demonstration artifacts are copied byte for byte. A manual GitHub Actions workflow fetches the pinned base, applies the current patch, requires all 17 selected tests to pass, and exports the generated checkpoint demonstration.

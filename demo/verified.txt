@@ -1,0 +1,1 @@
+Producer exited before consumer launched. Fresh Player restore executed zero frame scripts. Subsequent trace, heap, RNG, keyboard state, display tree, timeline and actual render command digest match exactly.

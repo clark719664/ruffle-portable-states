@@ -1,0 +1,2833 @@
+diff --git a/core/Cargo.toml b/core/Cargo.toml
+index c0fafc3a..d5091d7b 100644
+--- a/core/Cargo.toml
++++ b/core/Cargo.toml
+@@ -39,7 +39,7 @@ chrono = { workspace = true, features = ["clock"] }
+ web-time = "1.1.0"
+ encoding_rs = { workspace = true }
+ rand = { workspace = true, features = ["std", "sys_rng"] }
+-serde = { workspace = true }
++serde = { workspace = true, features = ["derive"] }
+ serde_json = { workspace = true, features = ["preserve_order"] }
+ nellymoser-rs = { git = "https://github.com/ruffle-rs/nellymoser", rev = "073eb48d907201f46dea0c8feb4e8d9a1d92208c", optional = true }
+ regress = { workspace = true }
+diff --git a/core/src/avm1.rs b/core/src/avm1.rs
+index 857fe50d..6dfc9794 100644
+--- a/core/src/avm1.rs
++++ b/core/src/avm1.rs
+@@ -36,7 +36,7 @@ pub use function::ExecutionReason;
+ pub use globals::array::ArrayBuilder;
+ pub use globals::context_menu::make_context_menu_state;
+ pub use globals::sound::start as start_sound;
+-pub use object::{NativeObject, Object, ObjectHandle, ObjectPtr};
++pub use object::{HeapSnapshot, HeapSnapshotError, NativeObject, Object, ObjectHandle, ObjectPtr};
+ pub use property::Attribute;
+ pub use property_map::PropertyMap;
+ use ruffle_common::avm_string::AvmString;
+diff --git a/core/src/avm1/object.rs b/core/src/avm1/object.rs
+index 12d9df2c..14600e98 100644
+--- a/core/src/avm1/object.rs
++++ b/core/src/avm1/object.rs
+@@ -40,6 +40,7 @@ mod script_object;
+ pub mod stage_object;
+ pub mod super_object;
+ 
++pub use script_object::portable_snapshot::{HeapSnapshot, HeapSnapshotError};
+ pub use script_object::{Object, ObjectHandle, ObjectWeak};
+ 
+ #[derive(Copy, Clone, Collect)]
+diff --git a/core/src/avm1/object/script_object.rs b/core/src/avm1/object/script_object.rs
+index d6767e90..efd3e8da 100644
+--- a/core/src/avm1/object/script_object.rs
++++ b/core/src/avm1/object/script_object.rs
+@@ -17,6 +17,9 @@ use std::cell::Ref;
+ 
+ use super::super_object::SuperObject;
+ 
++#[path = "script_object/portable_snapshot.rs"]
++pub mod portable_snapshot;
++
+ #[derive(Clone, Collect)]
+ #[collect(no_drop)]
+ pub struct Watcher<'gc> {
+@@ -1063,3 +1066,7 @@ fn parse_array_index(name: AvmString<'_>) -> Option<i32> {
+ 
+     name.parse::<std::num::Wrapping<i32>>().ok().map(|i| i.0)
+ }
++
++#[cfg(test)]
++#[path = "script_object/portable_snapshot_tests.rs"]
++mod portable_snapshot_tests;
+diff --git a/core/src/avm1/object/script_object/portable_snapshot.rs b/core/src/avm1/object/script_object/portable_snapshot.rs
+new file mode 100644
+index 00000000..bb37f5d5
+--- /dev/null
++++ b/core/src/avm1/object/script_object/portable_snapshot.rs
+@@ -0,0 +1,253 @@
++//! Portable codec for AVM1 ordinary-object graphs, not execution checkpoints.
++//!
++//! This deliberately rejects native objects, functions, display objects,
++//! virtual properties, watchers and interfaces. A Player root is unsupported.
++//! Numeric bits and UTF-16 units avoid JSON's lossy number/string conversions.
++use super::{Attribute, AvmString, Mutation, NativeObject, Object, Property, Value};
++use crate::string::WString;
++use serde::{Deserialize, Serialize};
++use std::collections::{HashMap, HashSet};
++
++/// Versioned, address-free ordinary-object heap graph.
++///
++/// The representation contains no GC references and may outlive its arena.
++/// It is a prerequisite for, and must not be presented as, a Player snapshot.
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct HeapSnapshot {
++    version: u32,
++    root: u32,
++    objects: Vec<SavedObject>,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct SavedObject {
++    // Flash enumeration order: most recently inserted first.
++    properties: Vec<SavedProperty>,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct SavedProperty {
++    name: Vec<u16>,
++    attributes: u16,
++    value: SavedValue,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++enum SavedValue {
++    Undefined,
++    Null,
++    Bool(bool),
++    NumberBits(u64),
++    String(Vec<u16>),
++    Object(u32),
++}
++
++#[derive(Debug, thiserror::Error)]
++pub enum HeapSnapshotError {
++    #[error("unsupported object {object}: {state}")]
++    Unsupported { object: u32, state: &'static str },
++    #[error("invalid heap snapshot: {0}")]
++    Invalid(&'static str),
++}
++
++impl HeapSnapshot {
++    /// The sealed movie policy proves builtin/native bindings cannot be mutated.
++    /// Only its protected scalar namespace is copied; the fresh root retains its
++    /// freshly allocated MovieClip and builtin prototype bindings.
++    pub(crate) fn capture_sealed<'gc>(
++        root: Object<'gc>,
++        mc: &Mutation<'gc>,
++    ) -> Result<Self, HeapSnapshotError> {
++        let plain = Object::new_without_proto(mc);
++        let data = root.0.borrow();
++        let properties: Vec<_> = data.properties.iter().collect();
++        for (name, property) in properties.into_iter().rev() {
++            if name.to_utf8_lossy().starts_with("s_") {
++                if property.is_virtual()
++                    || !matches!(
++                        property.data(),
++                        Value::Number(_) | Value::Bool(_) | Value::Undefined
++                    )
++                {
++                    return Err(HeapSnapshotError::Invalid("non-scalar sealed property"));
++                }
++                plain
++                    .0
++                    .borrow_mut(mc)
++                    .properties
++                    .insert(name, property.clone(), true);
++            }
++        }
++        Self::capture(plain)
++    }
++
++    pub(crate) fn restore_sealed<'gc>(
++        &self,
++        root: Object<'gc>,
++        mc: &Mutation<'gc>,
++    ) -> Result<(), HeapSnapshotError> {
++        self.validate()?;
++        if self.objects.len() != 1 || self.root != 0 {
++            return Err(HeapSnapshotError::Invalid(
++                "sealed heap must contain one object",
++            ));
++        }
++        for property in &self.objects[0].properties {
++            let name = String::from_utf16(&property.name)
++                .map_err(|_| HeapSnapshotError::Invalid("invalid sealed name"))?;
++            if name.len() <= 2
++                || name.len() > 128
++                || !name.starts_with("s_")
++                || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
++                || property.attributes != 0
++                || !matches!(
++                    property.value,
++                    SavedValue::NumberBits(_) | SavedValue::Bool(_) | SavedValue::Undefined
++                )
++            {
++                return Err(HeapSnapshotError::Invalid("invalid sealed property"));
++            }
++        }
++        let plain = self.restore(mc)?;
++        let data = plain.0.borrow();
++        let properties: Vec<_> = data.properties.iter().collect();
++        for (name, property) in properties.into_iter().rev() {
++            root.0
++                .borrow_mut(mc)
++                .properties
++                .insert(name, property.clone(), true);
++        }
++        Ok(())
++    }
++
++    /// Copy reachable stored own properties without executing ActionScript.
++    ///
++    /// All references, including __proto__, are traversed. Reaching a builtin
++    /// native function therefore rejects capture rather than dropping it.
++    pub fn capture(root: Object<'_>) -> Result<Self, HeapSnapshotError> {
++        let mut pending = vec![root];
++        let mut ids = HashMap::from([(root.as_ptr(), 0u32)]);
++        let mut objects = Vec::new();
++        // Iterate rather than recurse so deep and cyclic graphs use no call stack.
++        while objects.len() < pending.len() {
++            let index = objects.len();
++            let id = index as u32;
++            let object = pending[index];
++            let data = object.0.borrow();
++            let reject = |state| HeapSnapshotError::Unsupported { object: id, state };
++            if !matches!(data.native, NativeObject::None) {
++                return Err(reject("native payload"));
++            }
++            if data.interfaces.is_some() {
++                return Err(reject("interface list"));
++            }
++            if data.watchers.iter().next().is_some() {
++                return Err(reject("watchers"));
++            }
++            let mut properties = Vec::new();
++            for (name, property) in data.properties.iter() {
++                // Check both slots even if is_virtual() only checks the getter.
++                if property.getter().is_some() || property.setter().is_some() {
++                    return Err(reject("virtual property"));
++                }
++                let value = match property.data() {
++                    Value::Undefined => SavedValue::Undefined,
++                    Value::Null => SavedValue::Null,
++                    Value::Bool(value) => SavedValue::Bool(value),
++                    Value::Number(value) => SavedValue::NumberBits(value.to_bits()),
++                    Value::String(value) => SavedValue::String(value.iter().collect()),
++                    Value::Object(value) => {
++                        let next_id = u32::try_from(pending.len())
++                            .map_err(|_| HeapSnapshotError::Invalid("too many objects"))?;
++                        let reference = *ids.entry(value.as_ptr()).or_insert_with(|| {
++                            pending.push(value);
++                            next_id
++                        });
++                        SavedValue::Object(reference)
++                    }
++                    Value::MovieClip(_) => return Err(reject("MovieClip reference")),
++                };
++                properties.push(SavedProperty {
++                    name: name.iter().collect(),
++                    attributes: property.attributes().bits(),
++                    value,
++                });
++            }
++            objects.push(SavedObject { properties });
++        }
++        Ok(Self {
++            version: 1,
++            root: 0,
++            objects,
++        })
++    }
++
++    /// Allocate a new graph in the supplied arena, with no replay or host calls.
++    ///
++    /// Validate structural errors before making any GC allocations. Callers
++    /// should bound the size of serialized input before deserializing it.
++    pub fn restore<'gc>(&self, mc: &Mutation<'gc>) -> Result<Object<'gc>, HeapSnapshotError> {
++        self.validate()?;
++        // Allocate every identity before linking edges to preserve cycles/aliases.
++        let objects: Vec<_> = self
++            .objects
++            .iter()
++            .map(|_| Object::new_without_proto(mc))
++            .collect();
++        for (saved, object) in self.objects.iter().zip(&objects) {
++            let mut data = object.0.borrow_mut(mc);
++            // PropertyMap::iter reverses insertion order; insert in reverse again.
++            for property in saved.properties.iter().rev() {
++                let value = match &property.value {
++                    SavedValue::Undefined => Value::Undefined,
++                    SavedValue::Null => Value::Null,
++                    SavedValue::Bool(value) => Value::Bool(*value),
++                    SavedValue::NumberBits(bits) => Value::Number(f64::from_bits(*bits)),
++                    SavedValue::String(units) => {
++                        Value::String(AvmString::new(mc, WString::from_buf(units.clone())))
++                    }
++                    SavedValue::Object(id) => Value::Object(objects[*id as usize]),
++                };
++                data.properties.insert(
++                    AvmString::new(mc, WString::from_buf(property.name.clone())),
++                    Property::new_stored(value, Attribute::from_bits_retain(property.attributes)),
++                    true,
++                );
++            }
++        }
++        Ok(objects[self.root as usize])
++    }
++
++    fn validate(&self) -> Result<(), HeapSnapshotError> {
++        let invalid = HeapSnapshotError::Invalid;
++        if self.version != 1 {
++            return Err(invalid("unsupported version"));
++        }
++        if self.root as usize >= self.objects.len() {
++            return Err(invalid("root reference out of range"));
++        }
++        if self.objects.len() > u32::MAX as usize {
++            return Err(invalid("too many objects"));
++        }
++        for object in &self.objects {
++            let mut names = HashSet::new();
++            for property in &object.properties {
++                if !names.insert(&property.name) {
++                    return Err(invalid("duplicate property name"));
++                }
++                if Attribute::from_bits(property.attributes).is_none() {
++                    return Err(invalid("unknown property attributes"));
++                }
++                if let SavedValue::Object(id) = property.value {
++                    if id as usize >= self.objects.len() {
++                        return Err(invalid("object reference out of range"));
++                    }
++                }
++            }
++        }
++        Ok(())
++    }
++}
+diff --git a/core/src/avm1/object/script_object/portable_snapshot_tests.rs b/core/src/avm1/object/script_object/portable_snapshot_tests.rs
+new file mode 100644
+index 00000000..42526541
+--- /dev/null
++++ b/core/src/avm1/object/script_object/portable_snapshot_tests.rs
+@@ -0,0 +1,189 @@
++//! Regression tests for the portable ordinary-object heap graph slice.
++use super::portable_snapshot::HeapSnapshot;
++use super::*;
++use gc_arena::arena::rootless_mutate;
++
++fn name<'gc>(mc: &Mutation<'gc>, value: &str) -> AvmString<'gc> {
++    AvmString::new_utf8(mc, value)
++}
++
++#[test]
++fn portable_snapshot_roundtrip_fresh_arena_preserves_graph_and_bits() {
++    let bytes = rootless_mutate(|mc| {
++        let root = Object::new_without_proto(mc);
++        let shared = Object::new_without_proto(mc);
++        root.define_value(mc, name(mc, "self"), root.into(), Attribute::empty());
++        root.define_value(mc, name(mc, "a"), shared.into(), Attribute::DONT_ENUM);
++        root.define_value(mc, name(mc, "b"), shared.into(), Attribute::READ_ONLY);
++        let nan = f64::from_bits(0x7ff8_0000_0000_0042);
++        shared.define_value(
++            mc,
++            name(mc, "nan"),
++            Value::Number(nan),
++            Attribute::DONT_DELETE,
++        );
++        shared.define_value(
++            mc,
++            name(mc, "negzero"),
++            Value::Number(-0.0),
++            Attribute::empty(),
++        );
++        shared.define_value(
++            mc,
++            name(mc, "utf16"),
++            Value::String(AvmString::new(
++                mc,
++                crate::string::WString::from_buf(vec![0xd800u16, 0, 0xdc00]),
++            )),
++            Attribute::empty(),
++        );
++        shared.define_value(
++            mc,
++            name(mc, "undefined"),
++            Value::Undefined,
++            Attribute::empty(),
++        );
++        shared.define_value(mc, name(mc, "null"), Value::Null, Attribute::empty());
++        shared.define_value(mc, name(mc, "bool"), Value::Bool(true), Attribute::empty());
++        serde_json::to_vec(&HeapSnapshot::capture(root).unwrap()).unwrap()
++    });
++    // The source arena has been dropped. Only portable bytes cross this boundary.
++    rootless_mutate(|mc| {
++        let saved: HeapSnapshot = serde_json::from_slice(&bytes).unwrap();
++        let root = saved.restore(mc).unwrap();
++        let read = root.0.borrow();
++        let get = |key: &str| read.properties.get(name(mc, key), true).unwrap().data();
++        assert!(matches!(get("self"), Value::Object(o) if Object::ptr_eq(o, root)));
++        let Value::Object(a) = get("a") else {
++            panic!("missing shared object")
++        };
++        assert!(matches!(get("b"), Value::Object(b) if Object::ptr_eq(a, b)));
++        assert_eq!(
++            read.properties
++                .get(name(mc, "a"), true)
++                .unwrap()
++                .attributes()
++                .bits(),
++            Attribute::DONT_ENUM.bits()
++        );
++        assert_eq!(saved, HeapSnapshot::capture(root).unwrap());
++        let a_read = a.0.borrow();
++        assert!(
++            matches!(a_read.properties.get(name(mc, "nan"), true).unwrap().data(), Value::Number(n) if n.to_bits() == 0x7ff8_0000_0000_0042)
++        );
++        assert!(
++            matches!(a_read.properties.get(name(mc, "negzero"), true).unwrap().data(), Value::Number(n) if n.to_bits() == (-0.0f64).to_bits())
++        );
++    });
++}
++
++#[test]
++fn portable_snapshot_rejects_native_and_virtual_properties() {
++    rootless_mutate(|mc| {
++        let root = Object::new_without_proto(mc);
++        root.set_native(mc, NativeObject::Bool(true));
++        assert!(HeapSnapshot::capture(root).is_err());
++        let root = Object::new_without_proto(mc);
++        let getter = Object::new_without_proto(mc);
++        root.0.borrow_mut(mc).properties.insert(
++            name(mc, "getter"),
++            Property::new_virtual(getter, None, Attribute::empty()),
++            true,
++        );
++        assert!(HeapSnapshot::capture(root).is_err());
++    });
++}
++
++#[test]
++fn portable_snapshot_rejects_watchers_interfaces_and_corrupt_references() {
++    rootless_mutate(|mc| {
++        let root = Object::new_without_proto(mc);
++        root.0.borrow_mut(mc).interfaces = Some(vec![]);
++        assert!(HeapSnapshot::capture(root).is_err());
++        root.0.borrow_mut(mc).interfaces = None;
++        root.0.borrow_mut(mc).watchers.insert(
++            name(mc, "watched"),
++            Watcher::new(root, Value::Null),
++            true,
++        );
++        assert!(HeapSnapshot::capture(root).is_err());
++        root.0.borrow_mut(mc).watchers = PropertyMap::new();
++        root.define_value(mc, name(mc, "self"), root.into(), Attribute::empty());
++        let snapshot = HeapSnapshot::capture(root).unwrap();
++        let mut json = serde_json::to_value(&snapshot).unwrap();
++        json["objects"][0]["properties"][0]["value"]["Object"] = 999.into();
++        let malformed: HeapSnapshot = serde_json::from_value(json).unwrap();
++        assert!(malformed.restore(mc).is_err());
++        let mut json = serde_json::to_value(&snapshot).unwrap();
++        json["version"] = 999.into();
++        let malformed: HeapSnapshot = serde_json::from_value(json).unwrap();
++        assert!(malformed.restore(mc).is_err());
++    });
++}
++
++#[test]
++fn portable_snapshot_rejects_actual_player_root_instead_of_claiming_checkpoint() {
++    crate::avm1::test_utils::with_avm(8, |_, root| {
++        assert!(HeapSnapshot::capture(root).is_err());
++        Ok(())
++    });
++}
++
++// The child entry point is selected by exact name, so neither child re-runs
++// the parent test. Only JSON bytes survive producer process exit.
++#[test]
++fn portable_snapshot_process_child() {
++    let Ok(mode) = std::env::var("RUFFLE_HEAP_SNAPSHOT_CHILD_MODE") else {
++        return;
++    };
++    let path = std::env::var_os("RUFFLE_HEAP_SNAPSHOT_CHILD_PATH").unwrap();
++    if mode == "export" {
++        let bytes = rootless_mutate(|mc| {
++            let root = Object::new_without_proto(mc);
++            let shared = Object::new_without_proto(mc);
++            root.define_value(mc, name(mc, "self"), root.into(), Attribute::empty());
++            root.define_value(mc, name(mc, "a"), shared.into(), Attribute::DONT_ENUM);
++            root.define_value(mc, name(mc, "b"), shared.into(), Attribute::READ_ONLY);
++            serde_json::to_vec(&HeapSnapshot::capture(root).unwrap()).unwrap()
++        });
++        std::fs::write(path, bytes).unwrap();
++    } else {
++        assert_eq!(mode, "restore");
++        let saved: HeapSnapshot = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
++        rootless_mutate(|mc| {
++            let root = saved.restore(mc).unwrap();
++            let data = root.0.borrow();
++            assert!(
++                matches!(data.properties.get(name(mc, "self"), true).unwrap().data(), Value::Object(o) if Object::ptr_eq(o, root))
++            );
++            let Value::Object(a) = data.properties.get(name(mc, "a"), true).unwrap().data() else {
++                panic!("object a")
++            };
++            assert!(
++                matches!(data.properties.get(name(mc, "b"), true).unwrap().data(), Value::Object(b) if Object::ptr_eq(a, b))
++            );
++            assert_eq!(saved, HeapSnapshot::capture(root).unwrap());
++        });
++    }
++}
++
++#[test]
++fn portable_snapshot_survives_producer_exit_and_fresh_process_restore() {
++    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
++        .join("../target")
++        .join(format!("portable_snapshot_{}.json", std::process::id()));
++    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
++    let run_child = |mode| {
++        std::process::Command::new(std::env::current_exe().unwrap())
++            .args(["--exact", "avm1::object::script_object::portable_snapshot_tests::portable_snapshot_process_child", "--nocapture"])
++            .env("RUFFLE_HEAP_SNAPSHOT_CHILD_MODE", mode)
++            .env("RUFFLE_HEAP_SNAPSHOT_CHILD_PATH", &path)
++            .output()
++            .unwrap()
++    };
++    let exported = run_child("export");
++    assert!(exported.status.success(), "export: {:?}", exported);
++    let restored = run_child("restore");
++    std::fs::remove_file(path).unwrap();
++    assert!(restored.status.success(), "restore: {:?}", restored);
++}
+diff --git a/core/src/avm1/runtime.rs b/core/src/avm1/runtime.rs
+index 073af1ef..4c876b88 100644
+--- a/core/src/avm1/runtime.rs
++++ b/core/src/avm1/runtime.rs
+@@ -109,6 +109,24 @@ pub struct Avm1<'gc> {
+ }
+ 
+ impl<'gc> Avm1<'gc> {
++    pub(crate) fn portable_exec_head(&self) -> Option<MovieClip<'gc>> {
++        self.clip_exec_list
++    }
++
++    pub(crate) fn set_portable_exec_head(&mut self, head: Option<MovieClip<'gc>>) {
++        self.clip_exec_list = head;
++    }
++
++    pub(crate) fn portable_quiescent(&self) -> bool {
++        !self.halted
++            && self.stack.is_empty()
++            && self
++                .registers
++                .iter()
++                .all(|value| matches!(value, Value::Undefined))
++            && !self.has_mouse_listener
++    }
++
+     pub fn new(context: &mut StringContext<'gc>, player_version: u8) -> Self {
+         let gc_context = context.gc();
+ 
+diff --git a/core/src/avm_rng.rs b/core/src/avm_rng.rs
+index cee7f19b..08ed5898 100644
+--- a/core/src/avm_rng.rs
++++ b/core/src/avm_rng.rs
+@@ -15,6 +15,19 @@ pub struct AvmRng {
+ }
+ 
+ impl AvmRng {
++    /// Capture an initialized generator. Zero defers seeding to the host clock,
++    /// so it cannot promise deterministic continuation without locale state.
++    pub fn snapshot_state(&self) -> Option<std::num::NonZeroU32> {
++        std::num::NonZeroU32::new(self.u_value)
++    }
++
++    /// Recreate an initialized generator without consulting the host clock.
++    pub fn from_snapshot_state(state: std::num::NonZeroU32) -> Self {
++        Self {
++            u_value: state.get(),
++        }
++    }
++
+     fn init_with_seed(&mut self, seed: u32) {
+         self.u_value = seed;
+     }
+@@ -64,3 +77,29 @@ impl AvmRng {
+ fn get_seed(locale: &dyn LocaleBackend) -> u32 {
+     locale.get_current_date_time().timestamp_micros() as u32
+ }
++
++#[cfg(test)]
++mod portable_snapshot_tests {
++    use super::*;
++    use crate::backend::locale::DeterministicLocaleBackend;
++
++    #[test]
++    fn portable_snapshot_rng_continues_without_reseeding() {
++        let locale = DeterministicLocaleBackend::default();
++        let mut original = AvmRng::default();
++        assert!(original.snapshot_state().is_none());
++        for _ in 0..17 {
++            original.generate_random_number(&locale);
++        }
++        let state = original.snapshot_state().expect("initialized RNG");
++        let expected: Vec<_> = (0..64)
++            .map(|_| original.generate_random_number(&locale))
++            .collect();
++        drop(original);
++        let mut restored = AvmRng::from_snapshot_state(state);
++        let actual: Vec<_> = (0..64)
++            .map(|_| restored.generate_random_number(&locale))
++            .collect();
++        assert_eq!(expected, actual);
++    }
++}
+diff --git a/core/src/context.rs b/core/src/context.rs
+index 2f41c70a..f084233d 100644
+--- a/core/src/context.rs
++++ b/core/src/context.rs
+@@ -522,6 +522,10 @@ pub struct ActionQueue<'gc> {
+ }
+ 
+ impl<'gc> ActionQueue<'gc> {
++    pub(crate) fn portable_is_empty(&self) -> bool {
++        self.action_queue.iter().all(|(_, queue)| queue.is_empty())
++    }
++
+     const DEFAULT_CAPACITY: usize = 32;
+ 
+     /// Crates a new `ActionQueue` with an empty queue.
+diff --git a/core/src/display_object.rs b/core/src/display_object.rs
+index 0a6fde56..cd160762 100644
+--- a/core/src/display_object.rs
++++ b/core/src/display_object.rs
+@@ -37,6 +37,7 @@ mod interactive;
+ mod loader_display;
+ mod morph_shape;
+ mod movie_clip;
++pub(crate) mod portable_snapshot;
+ mod stage;
+ mod text;
+ mod text_line;
+diff --git a/core/src/display_object/movie_clip.rs b/core/src/display_object/movie_clip.rs
+index 6f1a27a8..40f703fa 100644
+--- a/core/src/display_object/movie_clip.rs
++++ b/core/src/display_object/movie_clip.rs
+@@ -2286,6 +2286,149 @@ impl<'gc> MovieClip<'gc> {
+         self.0.tag_stream_len()
+     }
+ 
++    pub(crate) fn portable_timeline_capture(
++        self,
++    ) -> Result<super::portable_snapshot::TimelineSnapshot, String> {
++        let cell = self.0.cell.borrow();
++        if self.movie().is_action_script_3()
++            || self.0.object1.get().is_none()
++            || self.0.object2.get().is_some()
++            || self.0.drop_target.get().is_some()
++            || self.0.hit_area.get().is_some()
++            || !self.0.queued_tags.borrow().is_empty()
++            || self.0.attached_audio.get().is_some()
++            || self.0.audio_stream.get().is_some()
++            || !self.clip_actions().is_empty()
++            || !self.0.clip_event_flags.get().is_empty()
++            || self.0.drawing.get().is_some()
++            || self.0.queued_goto.get().is_some()
++            || self.0.has_pending_script.get()
++            || self.0.button_mode.get()
++            || !self.0.avm2_enabled.get()
++            || !self.0.avm2_use_hand_cursor.get()
++            || !cell.frame_scripts.is_empty()
++            || !cell.avm1_text_field_bindings.is_empty()
++        {
++            return Err("unsupported MovieClip runtime state".into());
++        }
++        let snapshot = super::portable_snapshot::TimelineSnapshot {
++            tag_stream_pos: self.0.tag_stream_pos.get(),
++            current_frame: self.0.current_frame.get(),
++            flags: self.0.flags.get().bits(),
++            queued_script_frame: self.0.queued_script_frame.get(),
++            last_queued_script_frame: self.0.last_queued_script_frame.get(),
++        };
++        self.portable_timeline_validate(&snapshot)?;
++        Ok(snapshot)
++    }
++
++    pub(crate) fn portable_timeline_validate(
++        self,
++        snapshot: &super::portable_snapshot::TimelineSnapshot,
++    ) -> Result<(), String> {
++        let allowed = MovieClipFlags::INITIALIZED
++            | MovieClipFlags::PLAYING
++            | MovieClipFlags::POST_INSTANTIATED
++            // run_goto sets this for every implicit loop, including AVM1;
++            // only the AVM2 construct_frame path clears it afterwards.
++            | MovieClipFlags::LOOP_QUEUED;
++        if self.movie().is_action_script_3()
++            || snapshot.flags & !allowed.bits() != 0
++            || snapshot.flags & MovieClipFlags::POST_INSTANTIATED.bits() == 0
++            || snapshot.flags & MovieClipFlags::INITIALIZED.bits() == 0
++            || (snapshot.flags & MovieClipFlags::LOOP_QUEUED.bits() != 0
++                && self.header_frames() <= 1)
++            || snapshot.current_frame == 0
++            || snapshot.current_frame > self.header_frames()
++            || snapshot.queued_script_frame != snapshot.current_frame
++            || snapshot.last_queued_script_frame.is_some()
++        {
++            return Err(format!(
++                "invalid portable MovieClip timeline state: id={} header_frames={} snapshot={snapshot:?}",
++                self.id(),
++                self.header_frames()
++            ));
++        }
++        // Validate against actual ShowFrame boundaries, not just a byte bound:
++        // accepting a cursor inside an action/tag would change continuation.
++        let shared = self.0.shared.get();
++        let data = shared.swf_data.as_ref();
++        let mut position = 0usize;
++        let mut frame = 0u16;
++        while position < data.len() {
++            let header = data
++                .get(position..position + 2)
++                .ok_or("truncated timeline tag header")?;
++            let header = u16::from_le_bytes([header[0], header[1]]);
++            position += 2;
++            let code = header >> 6;
++            let mut length = usize::from(header & 63);
++            if length == 63 {
++                let size = data
++                    .get(position..position + 4)
++                    .ok_or("truncated timeline tag length")?;
++                length = u32::from_le_bytes([size[0], size[1], size[2], size[3]]) as usize;
++                position += 4;
++            }
++            position = position
++                .checked_add(length)
++                .filter(|end| *end <= data.len())
++                .ok_or("timeline tag exceeds movie data")?;
++            if code == 0 {
++                // A one-frame clip takes NextFrame::Same on its second tick:
++                // it stops, then consumes its final End tag before returning.
++                if length == 0
++                    && self.header_frames() == 1
++                    && frame == snapshot.current_frame
++                    && snapshot.flags & MovieClipFlags::PLAYING.bits() == 0
++                    && data.len() as u64 == snapshot.tag_stream_pos
++                    // The SWF writer appends an implicit End, so input that
++                    // includes an explicit End has two. The runtime consumes
++                    // all of these. Accept only complete zero-length End tags.
++                    && (data.len() - position) % 2 == 0
++                    && data[position..].iter().all(|byte| *byte == 0)
++                {
++                    return Ok(());
++                }
++                break;
++            }
++            if code == 1 {
++                frame = frame.checked_add(1).ok_or("too many timeline frames")?;
++                if frame == snapshot.current_frame {
++                    if position as u64 == snapshot.tag_stream_pos {
++                        return Ok(());
++                    }
++                }
++            } else if frame == snapshot.current_frame {
++                // Only the final End tag may extend a completed frame cursor.
++                return Err("portable timeline cursor is not the saved frame boundary".into());
++            }
++        }
++        Err(format!(
++            "saved timeline frame is absent from movie data: id={} header_frames={} parsed_frame={frame} parsed_position={position} data_len={} snapshot={snapshot:?}",
++            self.id(),
++            self.header_frames(),
++            data.len()
++        ))
++    }
++
++    pub(crate) fn portable_timeline_restore(
++        self,
++        snapshot: &super::portable_snapshot::TimelineSnapshot,
++    ) -> Result<(), String> {
++        self.portable_timeline_validate(snapshot)?;
++        self.0.tag_stream_pos.set(snapshot.tag_stream_pos);
++        self.0.current_frame.set(snapshot.current_frame);
++        self.0
++            .flags
++            .set(MovieClipFlags::from_bits_retain(snapshot.flags));
++        self.0.queued_script_frame.set(snapshot.queued_script_frame);
++        self.0
++            .last_queued_script_frame
++            .set(snapshot.last_queued_script_frame);
++        Ok(())
++    }
++
+     pub fn forced_button_mode(self) -> bool {
+         self.0.button_mode.get()
+     }
+diff --git a/core/src/display_object/portable_snapshot.rs b/core/src/display_object/portable_snapshot.rs
+new file mode 100644
+index 00000000..a31feb6f
+--- /dev/null
++++ b/core/src/display_object/portable_snapshot.rs
+@@ -0,0 +1,449 @@
++//! Portable state for the sealed AVM1 static display-tree subset.
++//!
++//! This restores instances from preloaded immutable definitions. It never advances
++//! a timeline or executes a frame. The caller must validate the source SWF policy.
++use super::{
++    DisplayObject, DisplayObjectFlags, MovieClip, SoundTransform, TDisplayObject,
++    TDisplayObjectContainer,
++};
++use crate::context::UpdateContext;
++use crate::string::{AvmString, WStr};
++use crate::types::{Degrees, Percent};
++use crate::vminterface::Instantiator;
++use ruffle_render::matrix::Matrix;
++use ruffle_render::perspective_projection::PerspectiveProjection;
++use serde::{Deserialize, Serialize};
++use swf::{ColorTransform, Fixed8, Twips};
++
++const MAX_NODES: usize = 4096;
++const MAX_DEPTH: usize = 64;
++const ALLOWED_BASE_FLAGS: u32 =
++    (1 << 1) | (1 << 2) | (1 << 3) | (1 << 5) | (1 << 6) | (1 << 10) | (1 << 12) | (1 << 16);
++
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub(crate) struct DisplayTreeSnapshot {
++    pub root: DisplayNodeSnapshot,
++    /// Tree paths (display depths), in exact AVM1 execution order.
++    pub execution_order: Vec<Vec<i32>>,
++}
++
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub(crate) struct DisplayNodeSnapshot {
++    pub character_id: u16,
++    pub depth: i32,
++    pub place_frame: u16,
++    pub name: Option<Vec<u16>>,
++    /// IEEE-754 bits, to preserve exact transforms across JSON transports.
++    pub matrix: [u32; 4],
++    pub translation: [i32; 2],
++    pub color_transform: [i16; 8],
++    /// Rotation degrees, x/y scale percent, skew (IEEE-754 bits).
++    pub transform_cache: [u64; 4],
++    pub flags: u32,
++    pub timeline: Option<TimelineSnapshot>,
++    pub children: Vec<DisplayNodeSnapshot>,
++}
++
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub(crate) struct TimelineSnapshot {
++    pub tag_stream_pos: u64,
++    pub current_frame: u16,
++    pub flags: u8,
++    pub queued_script_frame: u16,
++    pub last_queued_script_frame: Option<u16>,
++}
++
++pub(crate) fn capture<'gc>(
++    root: MovieClip<'gc>,
++    context: &UpdateContext<'gc>,
++) -> Result<DisplayTreeSnapshot, String> {
++    let mut nodes = Vec::new();
++    let mut count = 0;
++    let root_state = capture_node(root.into(), &mut nodes, Vec::new(), 0, &mut count)?;
++    let mut execution_order = Vec::new();
++    let mut next = context.avm1.portable_exec_head();
++    while let Some(clip) = next {
++        let (_, path) = nodes
++            .iter()
++            .find(|(node, _)| DisplayObject::ptr_eq(*node, clip))
++            .ok_or("execution list contains a clip outside the saved display tree")?;
++        if execution_order.contains(path) {
++            return Err("cyclic AVM1 execution list".into());
++        }
++        execution_order.push(path.clone());
++        next = clip.next_avm1_clip();
++    }
++    if execution_order.len() != nodes.len() {
++        return Err("display clips missing from AVM1 execution list".into());
++    }
++    Ok(DisplayTreeSnapshot {
++        root: root_state,
++        execution_order,
++    })
++}
++
++fn capture_node<'gc>(
++    node: DisplayObject<'gc>,
++    clips: &mut Vec<(MovieClip<'gc>, Vec<i32>)>,
++    path: Vec<i32>,
++    level: usize,
++    count: &mut usize,
++) -> Result<DisplayNodeSnapshot, String> {
++    *count += 1;
++    if level > MAX_DEPTH || *count > MAX_NODES {
++        return Err("display tree exceeds portable limits".into());
++    }
++    let base = node.base();
++    let cell = base.cell.borrow();
++    let mut unsupported = Vec::new();
++    macro_rules! reject {
++        ($condition:expr, $field:literal) => {
++            if $condition {
++                unsupported.push($field);
++            }
++        };
++    }
++    reject!(base.flags.get().bits() & !ALLOWED_BASE_FLAGS != 0, "flags");
++    reject!(!cell.filters.is_empty(), "filters");
++    reject!(cell.blend_shader.is_some(), "blend_shader");
++    reject!(cell.cache.is_some(), "cache");
++    reject!(base.clip_depth.get() != 0, "clip_depth");
++    reject!(base.ratio.get() != 0, "ratio");
++    reject!(base.masker.get().is_some(), "masker");
++    reject!(base.maskee.get().is_some(), "maskee");
++    reject!(base.meta_data.get().is_some(), "meta_data");
++    // set_root_movie installs this even for AVM1. It is derived from the
++    // immutable movie, and is already present on a fresh destination root.
++    let expected_projection = (level == 0).then(|| PerspectiveProjection {
++        field_of_view: 55.0,
++        center: (
++            node.movie().width().to_pixels() / 2.0,
++            node.movie().height().to_pixels() / 2.0,
++        ),
++    });
++    reject!(
++        base.perspective_projection.get() != expected_projection,
++        "perspective_projection"
++    );
++    reject!(base.tz.get() != 0.0, "tz");
++    reject!(base.scroll_rect.get().is_some(), "scroll_rect");
++    reject!(
++        base.next_scroll_rect.get() != Default::default(),
++        "next_scroll_rect"
++    );
++    reject!(
++        base.scaling_grid.get() != Default::default(),
++        "scaling_grid"
++    );
++    reject!(base.opaque_background.get().is_some(), "opaque_background");
++    reject!(base.blend_mode.get() != Default::default(), "blend_mode");
++    reject!(
++        base.sound_transform.get() != SoundTransform::default(),
++        "sound_transform"
++    );
++    reject!(node.object2().is_some(), "object2");
++    if !unsupported.is_empty() {
++        return Err(format!(
++            "unsupported display runtime state: path={path:?} id={} flags={:#x} fields={unsupported:?}",
++            node.id(),
++            base.flags.get().bits()
++        ));
++    }
++    let timeline = match node {
++        DisplayObject::MovieClip(clip) => {
++            if level != 0 && clip.header_frames() != 1 {
++                return Err("nested timelines must contain exactly one frame".into());
++            }
++            clips.push((clip, path.clone()));
++            Some(clip.portable_timeline_capture()?)
++        }
++        DisplayObject::Graphic(_) if level != 0 => None,
++        _ => return Err("unsupported display object kind".into()),
++    };
++    let mut children = Vec::new();
++    if let Some(container) = node.as_container() {
++        if container.num_children() > MAX_NODES {
++            return Err("too many display children".into());
++        }
++        let mut prior_depth = None;
++        for child in container.iter_render_list() {
++            if prior_depth.is_some_and(|depth| depth >= child.depth()) {
++                return Err("portable render order must equal unique depth order".into());
++            }
++            prior_depth = Some(child.depth());
++            let mut child_path = path.clone();
++            child_path.push(child.depth());
++            children.push(capture_node(child, clips, child_path, level + 1, count)?);
++        }
++    }
++    let matrix = base.matrix.get();
++    let color = base.color_transform.get();
++    let result = DisplayNodeSnapshot {
++        character_id: node.id(),
++        depth: node.depth(),
++        place_frame: node.place_frame(),
++        name: node.name().map(|name| name.iter().collect()),
++        matrix: [
++            matrix.a.to_bits(),
++            matrix.b.to_bits(),
++            matrix.c.to_bits(),
++            matrix.d.to_bits(),
++        ],
++        translation: [matrix.tx.get(), matrix.ty.get()],
++        color_transform: [
++            color.r_multiply.get(),
++            color.g_multiply.get(),
++            color.b_multiply.get(),
++            color.a_multiply.get(),
++            color.r_add,
++            color.g_add,
++            color.b_add,
++            color.a_add,
++        ],
++        transform_cache: [
++            f64::from(base.rotation.get()).to_bits(),
++            base.scale_x.get().percent().to_bits(),
++            base.scale_y.get().percent().to_bits(),
++            base.skew.get().to_bits(),
++        ],
++        flags: base.flags.get().bits(),
++        timeline,
++        children,
++    };
++    validate_scalars(&result, level == 0)?;
++    Ok(result)
++}
++
++fn validate_scalars(node: &DisplayNodeSnapshot, root: bool) -> Result<(), String> {
++    if node.flags & !ALLOWED_BASE_FLAGS != 0
++        || node.matrix.iter().any(|v| !f32::from_bits(*v).is_finite())
++        || node
++            .transform_cache
++            .iter()
++            .any(|v| !f64::from_bits(*v).is_finite())
++        || node.name.as_ref().is_some_and(|name| name.len() > 1024)
++        || (node.flags & DisplayObjectFlags::IS_ROOT.bits() != 0) != root
++        || (!root
++            && (node.character_id == 0
++                || !(1..=65535).contains(&node.depth)
++                || node.place_frame != 1))
++        || (root && node.timeline.is_none())
++        || (node.timeline.is_none() && !node.children.is_empty())
++    {
++        return Err("invalid portable display scalar state".into());
++    }
++    Ok(())
++}
++
++pub(crate) fn restore<'gc>(
++    root: MovieClip<'gc>,
++    snapshot: &DisplayTreeSnapshot,
++    context: &mut UpdateContext<'gc>,
++) -> Result<(), String> {
++    if root.num_children() != 0 || root.current_frame() != 0 {
++        return Err("display restore requires a fresh, unadvanced root".into());
++    }
++    let mut count = 0;
++    validate_tree(&snapshot.root, 0, &mut count)?;
++    if snapshot.root.character_id != root.id()
++        || snapshot.root.depth != root.depth()
++        || snapshot.root.place_frame != root.place_frame()
++        || snapshot.root.name != root.name().map(|name| name.iter().collect::<Vec<u16>>())
++    {
++        return Err("snapshot root does not match the loaded movie".into());
++    }
++    let mut clips = Vec::new();
++    restore_node(root.into(), &snapshot.root, context, &mut clips, Vec::new())?;
++    if snapshot.execution_order.len() != clips.len() {
++        return Err("invalid portable execution list length".into());
++    }
++    let mut ordered = Vec::new();
++    for path in &snapshot.execution_order {
++        let (clip, _) = clips
++            .iter()
++            .find(|(_, candidate)| candidate == path)
++            .ok_or("execution list path does not identify a saved clip")?;
++        if ordered
++            .iter()
++            .any(|prior| DisplayObject::ptr_eq(*prior, *clip))
++        {
++            return Err("duplicate clip in portable execution list".into());
++        }
++        ordered.push(*clip);
++    }
++    for (index, clip) in ordered.iter().enumerate() {
++        clip.set_next_avm1_clip(context.gc(), ordered.get(index + 1).copied());
++    }
++    context
++        .avm1
++        .set_portable_exec_head(ordered.first().copied());
++    Ok(())
++}
++
++fn validate_tree(
++    node: &DisplayNodeSnapshot,
++    level: usize,
++    count: &mut usize,
++) -> Result<(), String> {
++    *count += 1;
++    if level > MAX_DEPTH || *count > MAX_NODES {
++        return Err("display tree exceeds portable limits".into());
++    }
++    validate_scalars(node, level == 0)?;
++    let mut previous = None;
++    for child in &node.children {
++        if previous.is_some_and(|depth| depth >= child.depth) {
++            return Err("invalid child depth order".into());
++        }
++        previous = Some(child.depth);
++        validate_tree(child, level + 1, count)?;
++    }
++    Ok(())
++}
++
++fn restore_node<'gc>(
++    node: DisplayObject<'gc>,
++    snapshot: &DisplayNodeSnapshot,
++    context: &mut UpdateContext<'gc>,
++    clips: &mut Vec<(MovieClip<'gc>, Vec<i32>)>,
++    path: Vec<i32>,
++) -> Result<(), String> {
++    // Timeline placement installs explicit names before constructing AVM1
++    // objects. Do the same so construction consumes no instance-name counter.
++    if let Some(name) = &snapshot.name {
++        node.set_name(
++            context.gc(),
++            AvmString::new(context.gc(), WStr::from_units(name.as_slice())),
++        );
++    } else if snapshot.timeline.is_some() {
++        return Err("snapshot omitted an instantiated clip name".into());
++    }
++    match (node, &snapshot.timeline) {
++        (DisplayObject::MovieClip(clip), Some(timeline)) => {
++            if !path.is_empty() && clip.header_frames() != 1 {
++                return Err("nested timelines must contain exactly one frame".into());
++            }
++            clip.portable_timeline_validate(timeline)?;
++            // This creates the native object/prototype and execution-list entry,
++            // without entering a frame. The sealed policy excludes constructors.
++            clip.post_instantiation(context, None, Instantiator::Movie, false);
++            clips.push((clip, path.clone()));
++            for saved_child in &snapshot.children {
++                let child = context
++                    .library
++                    .library_for_movie_mut(clip.movie())
++                    .instantiate_by_id(saved_child.character_id, context.gc_context)
++                    .ok_or("saved display character is absent from the movie library")?;
++                clip.replace_at_depth(context, child, saved_child.depth);
++                let mut child_path = path.clone();
++                child_path.push(saved_child.depth);
++                restore_node(child, saved_child, context, clips, child_path)?;
++            }
++            clip.portable_timeline_restore(timeline)?;
++        }
++        (DisplayObject::Graphic(_), None) if snapshot.children.is_empty() => {}
++        _ => return Err("saved display kind does not match immutable character definition".into()),
++    }
++    if node.id() != snapshot.character_id {
++        return Err("display character id mismatch".into());
++    }
++    let base = node.base();
++    let m = snapshot.matrix.map(f32::from_bits);
++    node.set_matrix(Matrix {
++        a: m[0],
++        b: m[1],
++        c: m[2],
++        d: m[3],
++        tx: Twips::new(snapshot.translation[0]),
++        ty: Twips::new(snapshot.translation[1]),
++    });
++    let c = snapshot.color_transform;
++    node.set_color_transform(ColorTransform {
++        r_multiply: Fixed8::from_bits(c[0]),
++        g_multiply: Fixed8::from_bits(c[1]),
++        b_multiply: Fixed8::from_bits(c[2]),
++        a_multiply: Fixed8::from_bits(c[3]),
++        r_add: c[4],
++        g_add: c[5],
++        b_add: c[6],
++        a_add: c[7],
++    });
++    node.set_place_frame(snapshot.place_frame);
++    let cache = snapshot.transform_cache.map(f64::from_bits);
++    base.rotation.set(Degrees::from(cache[0]));
++    base.scale_x.set(Percent::from(cache[1]));
++    base.scale_y.set(Percent::from(cache[2]));
++    base.skew.set(cache[3]);
++    base.flags
++        .set(DisplayObjectFlags::from_bits_retain(snapshot.flags));
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn root() -> DisplayNodeSnapshot {
++        DisplayNodeSnapshot {
++            character_id: 0,
++            depth: 0,
++            place_frame: 0,
++            name: Some(vec![]),
++            matrix: [1.0_f32.to_bits(), 0, 0, 1.0_f32.to_bits()],
++            translation: [0, 0],
++            color_transform: [256, 256, 256, 256, 0, 0, 0, 0],
++            transform_cache: [0, 100.0_f64.to_bits(), 100.0_f64.to_bits(), 0],
++            flags: DisplayObjectFlags::IS_ROOT.bits() | DisplayObjectFlags::VISIBLE.bits(),
++            timeline: Some(TimelineSnapshot {
++                tag_stream_pos: 2,
++                current_frame: 1,
++                flags: 65,
++                queued_script_frame: 1,
++                last_queued_script_frame: None,
++            }),
++            children: vec![],
++        }
++    }
++
++    #[test]
++    fn rejects_unsupported_flags_and_nonfinite_transforms() {
++        let mut node = root();
++        assert!(validate_tree(&node, 0, &mut 0).is_ok());
++        node.flags |= DisplayObjectFlags::AVM1_PENDING_REMOVAL.bits();
++        assert!(validate_tree(&node, 0, &mut 0).is_err());
++        node = root();
++        node.matrix[0] = f32::NAN.to_bits();
++        assert!(validate_tree(&node, 0, &mut 0).is_err());
++    }
++
++    #[test]
++    fn rejects_duplicate_depths_and_nonroot_root_flags() {
++        let mut node = root();
++        let mut leaf = root();
++        leaf.character_id = 1;
++        leaf.depth = 1;
++        leaf.place_frame = 1;
++        leaf.flags = DisplayObjectFlags::VISIBLE.bits();
++        leaf.timeline = None;
++        node.children = vec![leaf.clone()];
++        assert!(validate_tree(&node, 0, &mut 0).is_ok());
++        node.children.push(leaf);
++        assert!(validate_tree(&node, 0, &mut 0).is_err());
++        node.children.pop();
++        node.children[0].flags |= DisplayObjectFlags::IS_ROOT.bits();
++        assert!(validate_tree(&node, 0, &mut 0).is_err());
++    }
++
++    #[test]
++    fn transport_preserves_exact_transform_bits() {
++        let mut node = root();
++        node.matrix[1] = (-0.0_f32).to_bits();
++        node.transform_cache[0] = (1.0_f64 / 7.0).to_bits();
++        let json = serde_json::to_string(&node).unwrap();
++        let restored: DisplayNodeSnapshot = serde_json::from_str(&json).unwrap();
++        assert_eq!(node, restored);
++    }
++}
+diff --git a/core/src/lib.rs b/core/src/lib.rs
+index d76c1cba..564f8f2e 100644
+--- a/core/src/lib.rs
++++ b/core/src/lib.rs
+@@ -58,10 +58,12 @@ pub mod external;
+ pub mod i18n;
+ pub mod stub;
+ 
++pub use avm1::{HeapSnapshot, HeapSnapshotError};
+ pub use context_menu::ContextMenuItem;
+ pub use events::PlayerEvent;
+ pub use indexmap;
+ pub use loader::LoadBehavior;
++pub use player::portable_snapshot::SealedAvm1Player;
+ pub use player::{Player, PlayerBuilder, PlayerMode, PlayerRuntime, StaticCallstack};
+ pub use ruffle_common::duration::FloatDuration;
+ pub use ruffle_render::backend::ViewportDimensions;
+diff --git a/core/src/player.rs b/core/src/player.rs
+index c3756621..1e7dfce1 100644
+--- a/core/src/player.rs
++++ b/core/src/player.rs
+@@ -312,6 +312,8 @@ enum RunState {
+     Stepping,
+ }
+ 
++pub mod portable_snapshot;
++
+ pub struct Player {
+     /// The version of the player we're emulating.
+     ///
+diff --git a/core/src/player/portable_snapshot.rs b/core/src/player/portable_snapshot.rs
+new file mode 100644
+index 00000000..af138185
+--- /dev/null
++++ b/core/src/player/portable_snapshot.rs
+@@ -0,0 +1,305 @@
++//! Checkpoints for a statically verified, sealed offline AVM1 subset.
++//!
++//! This is deliberately not a save-any-SWF API. The private Player cannot be
++//! mutated by callers. Validation excludes state that this format cannot save.
++use super::{LoadBehavior, Player, PlayerBuilder};
++use crate::avm_rng::AvmRng;
++use crate::avm1::{Attribute, HeapSnapshot, Value};
++use crate::backend::log::LogBackend;
++use crate::display_object::{TDisplayObject, portable_snapshot as display};
++use crate::frame_lifecycle::FramePhase;
++use crate::limits::ExecutionLimit;
++use crate::string::AvmString;
++use crate::tag_utils::SwfMovieData;
++use serde::{Deserialize, Serialize};
++use std::num::NonZeroU32;
++use std::sync::{Arc, Mutex};
++mod policy;
++#[cfg(test)]
++mod render_probe;
++#[cfg(test)]
++mod tests;
++
++const FORMAT: &str = "ruffle-045db00b-sealed-avm1-v1";
++const MAX_SAVE: usize = 8 * 1024 * 1024;
++
++#[derive(Clone, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct Checkpoint {
++    format: String,
++    // Exact immutable SWF identity, embedded rather than relying on a URL/hash.
++    movie: Vec<u8>,
++    heap: HeapSnapshot,
++    display: display::DisplayTreeSnapshot,
++    rng: u32,
++    completed_steps: u64,
++    background: Option<[u8; 4]>,
++    arrow_keys: [bool; 2],
++    builtin_pool: Vec<Vec<u16>>,
++}
++
++#[derive(Clone, Default)]
++struct TraceLog(Arc<Mutex<Vec<String>>>);
++impl LogBackend for TraceLog {
++    fn avm_trace(&self, message: &str) {
++        self.0.lock().unwrap().push(message.into());
++    }
++    fn avm_warning(&self, message: &str) {
++        self.0.lock().unwrap().push(format!("WARNING: {message}"));
++    }
++}
++
++/// Offline actual Ruffle Player with a deliberately closed feature policy.
++///
++/// `step` is the only execution API. Controller input is numeric root state
++/// (names beginning `s_`); no host clock, callbacks, or live resources exist.
++/// Restoring creates a fresh arena and rebinds static assets/native prototypes;
++/// it does not execute earlier frame scripts.
++pub struct SealedAvm1Player {
++    player: Arc<Mutex<Player>>,
++    movie: Vec<u8>,
++    trace: TraceLog,
++    completed_steps: u64,
++    arrow_keys: [bool; 2],
++    builtin_pool: Vec<Vec<u16>>,
++    #[cfg(test)]
++    recorder: render_probe::RecordingRenderer,
++    manifest: policy::Manifest,
++}
++
++impl SealedAvm1Player {
++    pub fn new(movie: &[u8], seed: u32) -> Result<Self, String> {
++        let manifest = policy::validate(movie)?;
++        let seed = NonZeroU32::new(seed).ok_or("zero RNG state is not portable")?;
++        let parsed = SwfMovieData::from_data(movie, "file:///sealed/movie.swf".into(), None, None)
++            .map_err(|e| e.to_string())?;
++        let trace = TraceLog::default();
++        let builder = PlayerBuilder::new()
++            .with_movie(parsed)
++            .with_log(trace.clone())
++            .with_load_behavior(LoadBehavior::Blocking);
++        #[cfg(test)]
++        let recorder = render_probe::RecordingRenderer::new();
++        #[cfg(test)]
++        let builder = builder.with_renderer(recorder.clone());
++        let player = builder.build();
++        let builtin_pool = {
++            let mut player = player.lock().map_err(|_| "player lock poisoned")?;
++            player.rng = AvmRng::from_snapshot_state(seed);
++            if !player.preload(&mut ExecutionLimit::none()) {
++                return Err("movie did not preload".into());
++            }
++            Self::constant_pool(&mut player)?
++        };
++        Ok(Self {
++            player,
++            movie: movie.to_vec(),
++            trace,
++            completed_steps: 0,
++            arrow_keys: [false; 2],
++            builtin_pool,
++            manifest,
++            #[cfg(test)]
++            recorder,
++        })
++    }
++
++    /// Deliver real keyboard transitions. The policy allows only Key.isDown for
++    /// these two keys; listeners/getCode/isToggled and other input APIs are rejected.
++    pub fn set_arrow_keys(&mut self, left: bool, right: bool) -> Result<(), String> {
++        use crate::events::{
++            KeyDescriptor, KeyLocation, LogicalKey, NamedKey, PhysicalKey, PlayerEvent,
++        };
++        let wanted = [left, right];
++        let mut player = self.player.lock().map_err(|_| "player lock poisoned")?;
++        for (i, (physical_key, named)) in [
++            (PhysicalKey::ArrowLeft, NamedKey::ArrowLeft),
++            (PhysicalKey::ArrowRight, NamedKey::ArrowRight),
++        ]
++        .into_iter()
++        .enumerate()
++        {
++            if wanted[i] != self.arrow_keys[i] {
++                let key = KeyDescriptor {
++                    physical_key,
++                    logical_key: LogicalKey::Named(named),
++                    key_location: KeyLocation::Standard,
++                };
++                player.handle_event(if wanted[i] {
++                    PlayerEvent::KeyDown { key }
++                } else {
++                    PlayerEvent::KeyUp { key }
++                });
++            }
++        }
++        self.arrow_keys = wanted;
++        Ok(())
++    }
++
++    /// Advance one completed Ruffle frame with explicitly supplied controller state.
++    pub fn step(&mut self, input: &[(&str, f64)]) -> Result<(), String> {
++        for (name, value) in input {
++            if !policy::state_name(name) || !value.is_finite() {
++                return Err("invalid controller state".into());
++            }
++        }
++        let mut player = self.player.lock().map_err(|_| "player lock poisoned")?;
++        player.mutate_with_update_context(|context| {
++            let root = context.stage.root_clip().unwrap().object1().unwrap();
++            for (name, value) in input {
++                root.define_value(
++                    context.gc(),
++                    AvmString::new_utf8(context.gc(), *name),
++                    Value::Number(*value),
++                    Attribute::empty(),
++                );
++            }
++        });
++        player.run_frame();
++        Self::check_boundary(&mut player)?;
++        self.completed_steps = self.completed_steps.checked_add(1).ok_or("step overflow")?;
++        Ok(())
++    }
++
++    fn check_boundary(player: &mut Player) -> Result<(), String> {
++        player.mutate_with_update_context(|context| {
++            if !context.action_queue.portable_is_empty()
++                || !context.post_frame_callbacks.is_empty()
++                || !context.avm1.portable_quiescent()
++                || *context.frame_phase != FramePhase::Idle
++            {
++                return Err(format!(
++                    "not quiescent: queue={}, callbacks={}, AVM={}, stack={}, pool={}, phase={:?}",
++                    context.action_queue.portable_is_empty(),
++                    context.post_frame_callbacks.len(),
++                    context.avm1.portable_quiescent(),
++                    context.avm1.stack_len(),
++                    context.avm1.constant_pool().len(),
++                    context.frame_phase
++                ));
++            }
++            Ok(())
++        })
++    }
++
++    fn constant_pool(player: &mut Player) -> Result<Vec<Vec<u16>>, String> {
++        player.mutate_with_update_context(|context| {
++            context
++                .avm1
++                .constant_pool()
++                .iter()
++                .map(|value| match value {
++                    Value::String(value) => Ok(value.iter().collect()),
++                    _ => Err("non-string builtin constant pool".into()),
++                })
++                .collect()
++        })
++    }
++
++    pub fn take_trace(&mut self) -> Vec<String> {
++        std::mem::take(&mut *self.trace.0.lock().unwrap())
++    }
++
++    pub fn checkpoint(&mut self) -> Result<Vec<u8>, String> {
++        if self.completed_steps == 0 {
++            return Err("checkpoint requires a completed frame".into());
++        }
++        let mut player = self.player.lock().map_err(|_| "player lock poisoned")?;
++        Self::check_boundary(&mut player)?;
++        if Self::constant_pool(&mut player)? != self.builtin_pool {
++            return Err("builtin constant pool changed".into());
++        }
++        let (heap, tree, background) = player.mutate_with_update_context(|context| {
++            let root = context
++                .stage
++                .root_clip()
++                .and_then(|root| root.as_movie_clip())
++                .ok_or("missing root")?;
++            let heap = HeapSnapshot::capture_sealed(
++                root.object1().ok_or("missing AVM1 root")?,
++                context.gc(),
++            )
++            .map_err(|e| e.to_string())?;
++            let tree = display::capture(root, context)?;
++            let background = context
++                .stage
++                .background_color()
++                .map(|c| [c.r, c.g, c.b, c.a]);
++            Ok::<_, String>((heap, tree, background))
++        })?;
++        self.manifest.validate_tree(&tree)?;
++        let saved = Checkpoint {
++            format: FORMAT.into(),
++            movie: self.movie.clone(),
++            heap,
++            display: tree,
++            rng: player
++                .rng
++                .snapshot_state()
++                .ok_or("uninitialized RNG")?
++                .get(),
++            completed_steps: self.completed_steps,
++            background,
++            arrow_keys: self.arrow_keys,
++            builtin_pool: self.builtin_pool.clone(),
++        };
++        let bytes = serde_json::to_vec(&saved).map_err(|e| e.to_string())?;
++        if bytes.len() > MAX_SAVE {
++            return Err("checkpoint exceeds size limit".into());
++        }
++        Ok(bytes)
++    }
++
++    pub fn restore(bytes: &[u8]) -> Result<Self, String> {
++        if bytes.len() > MAX_SAVE {
++            return Err("checkpoint exceeds size limit".into());
++        }
++        let saved: Checkpoint = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
++        if saved.format != FORMAT || saved.completed_steps == 0 {
++            return Err("unsupported checkpoint format/boundary".into());
++        }
++        let mut result = Self::new(&saved.movie, saved.rng)?;
++        if result.builtin_pool != saved.builtin_pool {
++            return Err("builtin constant pool mismatch".into());
++        }
++        result.manifest.validate_tree(&saved.display)?;
++        {
++            let mut player = result.player.lock().map_err(|_| "player lock poisoned")?;
++            player.mutate_with_update_context(|context| {
++                let root = context
++                    .stage
++                    .root_clip()
++                    .and_then(|root| root.as_movie_clip())
++                    .ok_or("missing root")?;
++                display::restore(root, &saved.display, context)?;
++                saved
++                    .heap
++                    .restore_sealed(root.object1().ok_or("missing root object")?, context.gc())
++                    .map_err(|e| e.to_string())?;
++                context
++                    .stage
++                    .set_background_color(saved.background.map(|c| swf::Color {
++                        r: c[0],
++                        g: c[1],
++                        b: c[2],
++                        a: c[3],
++                    }));
++                // post_instantiation queues empty Construct events. Policy forbids
++                // custom constructors/handlers, so draining creates no user code.
++                Player::run_actions(context);
++                // Player-global initialization may leave scratch registers.
++                // Completed AVM1 frames clear them; the sealed policy never stores
++                // registers, and saved boundaries require them to be Undefined.
++                context.avm1.clear();
++                Ok::<_, String>(())
++            })?;
++            Self::check_boundary(&mut player)?;
++        }
++        if !result.trace.0.lock().unwrap().is_empty() {
++            return Err("restore unexpectedly executed trace-producing code".into());
++        }
++        result.completed_steps = saved.completed_steps;
++        result.set_arrow_keys(saved.arrow_keys[0], saved.arrow_keys[1])?;
++        Ok(result)
++    }
++}
+diff --git a/core/src/player/portable_snapshot/policy.rs b/core/src/player/portable_snapshot/policy.rs
+new file mode 100644
+index 00000000..bb9f72d2
+--- /dev/null
++++ b/core/src/player/portable_snapshot/policy.rs
+@@ -0,0 +1,350 @@
++//! Static capability/operand validation: omitted instructions are rejected.
++use std::collections::{HashMap, HashSet};
++use swf::avm1::types::{Action, Value};
++use swf::{PlaceObjectAction, Tag};
++
++pub(super) fn state_name(name: &str) -> bool {
++    name.len() > 2
++        && name.len() <= 128
++        && name.starts_with("s_")
++        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
++}
++fn instance_name(name: &str) -> bool {
++    name.len() > 5
++        && name.len() <= 128
++        && name.starts_with("clip_")
++        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
++}
++
++#[derive(Clone)]
++struct StaticNode {
++    id: u16,
++    depth: i32,
++    name: Option<Vec<u16>>,
++    children: Vec<StaticNode>,
++}
++pub(super) struct Manifest {
++    children: Vec<StaticNode>,
++}
++impl Manifest {
++    pub fn validate_tree(
++        &self,
++        tree: &crate::display_object::portable_snapshot::DisplayTreeSnapshot,
++    ) -> Result<(), String> {
++        fn compare(
++            expected: &[StaticNode],
++            actual: &[crate::display_object::portable_snapshot::DisplayNodeSnapshot],
++        ) -> bool {
++            expected.len() == actual.len()
++                && expected.iter().zip(actual).all(|(a, b)| {
++                    a.id == b.character_id
++                        && a.depth == b.depth
++                        && a.name == b.name
++                        && b.place_frame == 1
++                        && compare(&a.children, &b.children)
++                })
++        }
++        if compare(&self.children, &tree.root.children) {
++            Ok(())
++        } else {
++            Err("checkpoint display tree differs from immutable SWF placement manifest".into())
++        }
++    }
++}
++
++pub(super) fn validate(bytes: &[u8]) -> Result<Manifest, String> {
++    if bytes.len() < 8
++        || bytes.len() > 1024 * 1024
++        || &bytes[..3] != b"FWS"
++        || bytes[3] != 7
++        || u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize != bytes.len()
++    {
++        return Err("policy requires bounded, uncompressed, length-exact SWF 7".into());
++    }
++    let buffer = swf::decompress_swf(bytes).map_err(|e| e.to_string())?;
++    let movie = swf::parse_swf(&buffer).map_err(|e| e.to_string())?;
++    let mut chars = HashMap::new();
++    let mut targets = HashSet::new();
++    validate_tags(
++        &movie.tags,
++        movie.header.num_frames(),
++        true,
++        &mut chars,
++        &mut targets,
++    )?;
++    // All targets are now known; validate actions after declarations.
++    for tag in &movie.tags {
++        if let Tag::DoAction(bytes) = tag {
++            validate_actions(bytes, &targets)?;
++        }
++    }
++    let mut assets = HashMap::new();
++    fn placements(tags: &[Tag<'_>], assets: &HashMap<u16, Vec<StaticNode>>) -> Vec<StaticNode> {
++        let mut nodes: Vec<_> = tags
++            .iter()
++            .filter_map(|tag| {
++                if let Tag::PlaceObject(place) = tag {
++                    let PlaceObjectAction::Place(id) = place.action else {
++                        unreachable!()
++                    };
++                    Some(StaticNode {
++                        id,
++                        depth: i32::from(place.depth),
++                        name: place
++                            .name
++                            .map(|n| n.as_bytes().iter().map(|b| u16::from(*b)).collect()),
++                        children: assets.get(&id).cloned().unwrap_or_default(),
++                    })
++                } else {
++                    None
++                }
++            })
++            .collect();
++        nodes.sort_by_key(|node| node.depth);
++        nodes
++    }
++    for tag in &movie.tags {
++        if let Tag::DefineSprite(sprite) = tag {
++            assets.insert(sprite.id, placements(&sprite.tags, &assets));
++        }
++    }
++    Ok(Manifest {
++        children: placements(&movie.tags, &assets),
++    })
++}
++
++fn validate_tags(
++    tags: &[Tag<'_>],
++    expected_frames: u16,
++    root: bool,
++    chars: &mut HashMap<u16, bool>,
++    targets: &mut HashSet<String>,
++) -> Result<(), String> {
++    let mut frames = 0u16;
++    let mut depths = HashSet::new();
++    let mut names = HashSet::new();
++    for tag in tags {
++        match tag {
++            Tag::End => (),
++            Tag::ShowFrame => {
++                frames = frames.checked_add(1).ok_or("too many frames")?;
++            }
++            Tag::DoAction(_) if root => (),
++            Tag::SetBackgroundColor(_) if root && frames == 0 => (),
++            Tag::DefineShape(shape) if root && frames == 0 => {
++                if shape.version > 3
++                    || shape.id == 0
++                    || chars.insert(shape.id, false).is_some()
++                    || !shape.styles.line_styles.is_empty()
++                    || shape
++                        .styles
++                        .fill_styles
++                        .iter()
++                        .any(|s| !matches!(s, swf::FillStyle::Color(_)))
++                    || shape.shape.iter().any(
++                        |s| matches!(s, swf::ShapeRecord::StyleChange(c) if c.new_styles.is_some()),
++                    )
++                {
++                    return Err("unsupported shape definition".into());
++                }
++            }
++            Tag::DefineSprite(sprite) if root && frames == 0 => {
++                if sprite.id == 0 || sprite.num_frames != 1 || chars.contains_key(&sprite.id) {
++                    return Err("unsupported sprite definition".into());
++                }
++                validate_tags(&sprite.tags, 1, false, chars, targets)?;
++                chars.insert(sprite.id, true);
++            }
++            Tag::PlaceObject(place) if frames == 0 => {
++                let PlaceObjectAction::Place(id) = place.action else {
++                    return Err("dynamic placement not supported".into());
++                };
++                let sprite = *chars
++                    .get(&id)
++                    .ok_or("unknown or forward character reference")?;
++                if (!root && sprite)
++                    || place.depth == 0
++                    || !depths.insert(place.depth)
++                    || place.version > 2
++                    || place.ratio.is_some()
++                    || place.clip_depth.is_some()
++                    || place.class_name.is_some()
++                    || place.filters.is_some()
++                    || place.background_color.is_some()
++                    || place.blend_mode.is_some()
++                    || place.clip_actions.is_some()
++                    || place.has_image
++                    || place.is_bitmap_cached.is_some()
++                    || place.amf_data.is_some()
++                {
++                    return Err("unsupported placement state".into());
++                }
++                if let Some(name) = place.name {
++                    let name = std::str::from_utf8(name.as_bytes())
++                        .map_err(|_| "non-ASCII instance name")?;
++                    if !instance_name(name) || !names.insert(name.to_owned()) {
++                        return Err("invalid/duplicate instance name".into());
++                    }
++                    if root && sprite {
++                        targets.insert(name.to_owned());
++                    }
++                } else if root && sprite {
++                    return Err("root sprite requires a stable name".into());
++                }
++            }
++            _ => return Err(format!("unsupported SWF tag: {tag:?}")),
++        }
++    }
++    if frames == 0 || frames != expected_frames {
++        return Err("frame count mismatch".into());
++    }
++    Ok(())
++}
++
++#[derive(Clone)]
++enum Operand {
++    Number(Option<f64>),
++    Name(String),
++    KeyBinding,
++}
++fn number(stack: &mut Vec<Operand>) -> Result<Option<f64>, String> {
++    match stack.pop() {
++        Some(Operand::Number(n)) => Ok(n),
++        _ => Err("numeric operand required".into()),
++    }
++}
++fn name(stack: &mut Vec<Operand>) -> Result<String, String> {
++    match stack.pop() {
++        Some(Operand::Name(n)) => Ok(n),
++        _ => Err("literal name operand required".into()),
++    }
++}
++fn target(stack: &mut Vec<Operand>, targets: &HashSet<String>) -> Result<(), String> {
++    let target = name(stack)?;
++    if target.is_empty() || targets.contains(&target) {
++        Ok(())
++    } else {
++        Err("unknown static target".into())
++    }
++}
++fn property(stack: &mut Vec<Operand>) -> Result<(), String> {
++    match number(stack)? {
++        Some(0.0 | 1.0) => Ok(()),
++        _ => Err("only x/y display properties are supported".into()),
++    }
++}
++fn validate_actions(bytes: &[u8], targets: &HashSet<String>) -> Result<(), String> {
++    let mut reader = swf::avm1::read::Reader::new(bytes, 7);
++    let mut stack = Vec::new();
++    let mut ended = false;
++    while !reader.get_ref().is_empty() {
++        match reader.read_action().map_err(|e| e.to_string())? {
++            Action::End => {
++                ended = true;
++                if !reader.get_ref().is_empty() {
++                    return Err("bytes after action end".into());
++                }
++            }
++            Action::Push(push) => {
++                for value in push.values {
++                    stack.push(match value {
++                        Value::Int(n) => Operand::Number(Some(f64::from(n))),
++                        Value::Float(n) => Operand::Number(Some(f64::from(n))),
++                        Value::Double(n) => Operand::Number(Some(n)),
++                        Value::Str(n) => Operand::Name(
++                            std::str::from_utf8(n.as_bytes())
++                                .map_err(|_| "non-ASCII literal")?
++                                .into(),
++                        ),
++                        _ => return Err("unsupported push value".into()),
++                    });
++                }
++            }
++            Action::GetVariable => {
++                let variable = name(&mut stack)?;
++                if variable == "Key" {
++                    stack.push(Operand::KeyBinding);
++                } else if state_name(&variable) {
++                    stack.push(Operand::Number(None));
++                } else {
++                    return Err("read outside sealed state namespace".into());
++                }
++            }
++            Action::CallMethod => {
++                if name(&mut stack)? != "isDown"
++                    || !matches!(stack.pop(), Some(Operand::KeyBinding))
++                    || number(&mut stack)? != Some(1.0)
++                    || !matches!(number(&mut stack)?, Some(37.0 | 39.0))
++                {
++                    return Err(
++                        "only Key.isDown with literal arrow-key argument is supported".into(),
++                    );
++                }
++                stack.push(Operand::Number(None));
++            }
++            Action::SetVariable => {
++                number(&mut stack)?;
++                if !state_name(&name(&mut stack)?) {
++                    return Err("write outside sealed state namespace".into());
++                }
++            }
++            Action::GetProperty => {
++                property(&mut stack)?;
++                target(&mut stack, targets)?;
++                stack.push(Operand::Number(None));
++            }
++            Action::SetProperty => {
++                number(&mut stack)?;
++                property(&mut stack)?;
++                target(&mut stack, targets)?;
++            }
++            Action::Add
++            | Action::Subtract
++            | Action::Multiply
++            | Action::Divide
++            | Action::Modulo
++            | Action::Less
++            | Action::Greater
++            | Action::Equals
++            | Action::And
++            | Action::Or => {
++                number(&mut stack)?;
++                number(&mut stack)?;
++                stack.push(Operand::Number(None));
++            }
++            Action::RandomNumber
++            | Action::Increment
++            | Action::Decrement
++            | Action::ToNumber
++            | Action::Not => {
++                number(&mut stack)?;
++                stack.push(Operand::Number(None));
++            }
++            Action::Trace => {
++                number(&mut stack)?;
++            }
++            Action::Pop => {
++                stack.pop().ok_or("stack underflow")?;
++            }
++            Action::PushDuplicate => {
++                stack.push(stack.last().cloned().ok_or("stack underflow")?);
++            }
++            Action::StackSwap => {
++                let n = stack.len();
++                if n < 2 {
++                    return Err("stack underflow".into());
++                }
++                stack.swap(n - 1, n - 2);
++            }
++            Action::Stop | Action::Play => (),
++            action => return Err(format!("unsupported AVM1 instruction: {action:?}")),
++        }
++        if stack.len() > 1024 {
++            return Err("operand stack limit".into());
++        }
++    }
++    if !ended || !stack.is_empty() {
++        return Err("action block must end with an empty stack".into());
++    }
++    Ok(())
++}
+diff --git a/core/src/player/portable_snapshot/render_probe.rs b/core/src/player/portable_snapshot/render_probe.rs
+new file mode 100644
+index 00000000..cd5116e7
+--- /dev/null
++++ b/core/src/player/portable_snapshot/render_probe.rs
+@@ -0,0 +1,326 @@
++//! Test-only recorder of the commands produced by the real Ruffle renderer.
++//! Unsupported drawing features deliberately panic rather than create false evidence.
++
++use std::any::Any;
++use std::borrow::Cow;
++use std::fmt::Write;
++use std::num::NonZeroU32;
++use std::sync::{Arc, Mutex};
++
++use ruffle_render::backend::{
++    BitmapCacheEntry, Context3D, Context3DProfile, PixelBenderOutput, PixelBenderTarget,
++    RenderBackend, ShapeHandle, ShapeHandleImpl, ViewportDimensions,
++};
++use ruffle_render::bitmap::{
++    Bitmap, BitmapHandle, BitmapSource, PixelRegion, RgbaBufRead, SyncHandle,
++};
++use ruffle_render::commands::{Command, CommandList};
++use ruffle_render::error::Error;
++use ruffle_render::filters::Filter;
++use ruffle_render::matrix::Matrix;
++use ruffle_render::pixel_bender::{PixelBenderShader, PixelBenderShaderHandle};
++use ruffle_render::pixel_bender_support::PixelBenderShaderArgument;
++use ruffle_render::quality::StageQuality;
++use ruffle_render::shape_utils::{DistilledShape, DrawCommand, DrawPath, FillRule};
++use swf::{Color, FillStyle};
++
++#[derive(Debug)]
++struct RecordedPath {
++    data: String,
++    color: Color,
++    rule: &'static str,
++}
++
++#[derive(Debug)]
++struct RecordedShape(Vec<RecordedPath>);
++impl ShapeHandleImpl for RecordedShape {}
++
++struct Recording {
++    dimensions: ViewportDimensions,
++    svg: Option<String>,
++    digest: Option<String>,
++    shape_count: usize,
++}
++
++/// Clones share the recorded output and viewport, but never contain a Player.
++#[derive(Clone)]
++pub(crate) struct RecordingRenderer(Arc<Mutex<Recording>>);
++
++impl RecordingRenderer {
++    pub(crate) fn new() -> Self {
++        Self(Arc::new(Mutex::new(Recording {
++            dimensions: ViewportDimensions {
++                width: 640,
++                height: 480,
++                scale_factor: 1.0,
++            },
++            svg: None,
++            digest: None,
++            shape_count: 0,
++        })))
++    }
++
++    pub(crate) fn render_svg(&self) -> String {
++        self.0
++            .lock()
++            .unwrap()
++            .svg
++            .clone()
++            .expect("Player::render must run first")
++    }
++
++    /// Exact canonical command description; intentionally not a lossy numeric hash.
++    pub(crate) fn digest(&self) -> String {
++        self.0
++            .lock()
++            .unwrap()
++            .digest
++            .clone()
++            .expect("Player::render must run first")
++    }
++
++    pub(crate) fn shape_count(&self) -> usize {
++        self.0.lock().unwrap().shape_count
++    }
++}
++
++fn matrix_svg(matrix: &Matrix) -> String {
++    format!(
++        "matrix({} {} {} {} {} {})",
++        f64::from(matrix.a),
++        f64::from(matrix.b),
++        f64::from(matrix.c),
++        f64::from(matrix.d),
++        matrix.tx.to_pixels(),
++        matrix.ty.to_pixels(),
++    )
++}
++
++fn color_svg(color: Color) -> String {
++    format!(
++        "fill=\"#{:02x}{:02x}{:02x}\" fill-opacity=\"{}\"",
++        color.r,
++        color.g,
++        color.b,
++        f64::from(color.a) / 255.0,
++    )
++}
++
++impl RenderBackend for RecordingRenderer {
++    fn viewport_dimensions(&self) -> ViewportDimensions {
++        self.0.lock().unwrap().dimensions
++    }
++
++    fn set_viewport_dimensions(&mut self, dimensions: ViewportDimensions) {
++        self.0.lock().unwrap().dimensions = dimensions;
++    }
++
++    fn register_shape(&mut self, shape: DistilledShape, _: &dyn BitmapSource) -> ShapeHandle {
++        let paths = shape
++            .paths
++            .into_iter()
++            .map(|path| {
++                let DrawPath::Fill {
++                    style,
++                    commands,
++                    winding_rule,
++                } = path
++                else {
++                    panic!("render probe does not support strokes");
++                };
++                let FillStyle::Color(color) = style else {
++                    panic!("render probe requires solid fills");
++                };
++                let mut data = String::new();
++                for command in commands {
++                    match command {
++                        DrawCommand::MoveTo(p) => {
++                            write!(data, "M{} {} ", p.x.to_pixels(), p.y.to_pixels()).unwrap()
++                        }
++                        DrawCommand::LineTo(p) => {
++                            write!(data, "L{} {} ", p.x.to_pixels(), p.y.to_pixels()).unwrap()
++                        }
++                        DrawCommand::QuadraticCurveTo { control, anchor } => write!(
++                            data,
++                            "Q{} {} {} {} ",
++                            control.x.to_pixels(),
++                            control.y.to_pixels(),
++                            anchor.x.to_pixels(),
++                            anchor.y.to_pixels(),
++                        )
++                        .unwrap(),
++                        DrawCommand::CubicCurveTo {
++                            control_a,
++                            control_b,
++                            anchor,
++                        } => write!(
++                            data,
++                            "C{} {} {} {} {} {} ",
++                            control_a.x.to_pixels(),
++                            control_a.y.to_pixels(),
++                            control_b.x.to_pixels(),
++                            control_b.y.to_pixels(),
++                            anchor.x.to_pixels(),
++                            anchor.y.to_pixels(),
++                        )
++                        .unwrap(),
++                    }
++                }
++                RecordedPath {
++                    data,
++                    color: *color,
++                    rule: match winding_rule {
++                        FillRule::EvenOdd => "evenodd",
++                        FillRule::NonZero => "nonzero",
++                    },
++                }
++            })
++            .collect();
++        ShapeHandle(Arc::new(RecordedShape(paths)))
++    }
++
++    fn submit_frame(
++        &mut self,
++        clear: Color,
++        commands: CommandList,
++        cache_entries: Vec<BitmapCacheEntry>,
++    ) {
++        assert!(
++            cache_entries.is_empty(),
++            "render probe does not support bitmap caching"
++        );
++        let dimensions = self.viewport_dimensions();
++        let mut svg = format!(
++            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"0 0 {} {}\">\n<rect width=\"100%\" height=\"100%\" {}/>\n",
++            dimensions.width,
++            dimensions.height,
++            dimensions.width,
++            dimensions.height,
++            color_svg(clear),
++        );
++        let mut digest = format!("viewport={dimensions:?};clear={clear:?}\n");
++        let mut shape_count = 0;
++        for command in commands.commands {
++            match command {
++                Command::RenderShape { shape, transform } => {
++                    assert!(
++                        transform.perspective_projection.is_none() && transform.tz == 0.0,
++                        "render probe does not support 3D transforms"
++                    );
++                    let shape = <dyn Any>::downcast_ref::<RecordedShape>(&*shape.0)
++                        .expect("render probe received a foreign shape handle");
++                    writeln!(
++                        digest,
++                        "shape={shape:?};matrix={:?};color={:?}",
++                        transform.matrix, transform.color_transform
++                    )
++                    .unwrap();
++                    for path in &shape.0 {
++                        let color = &transform.color_transform * path.color;
++                        writeln!(
++                            svg,
++                            "<path d=\"{}\" fill-rule=\"{}\" {} transform=\"{}\"/>",
++                            path.data,
++                            path.rule,
++                            color_svg(color),
++                            matrix_svg(&transform.matrix)
++                        )
++                        .unwrap();
++                    }
++                    shape_count += 1;
++                }
++                Command::DrawRect { color, matrix } => {
++                    writeln!(digest, "rect={color:?};matrix={matrix:?}").unwrap();
++                    writeln!(
++                        svg,
++                        "<rect width=\"1\" height=\"1\" {} transform=\"{}\"/>",
++                        color_svg(color),
++                        matrix_svg(&matrix)
++                    )
++                    .unwrap();
++                }
++                _ => panic!("render probe received an unsupported render command"),
++            }
++        }
++        svg.push_str("</svg>\n");
++        let mut recording = self.0.lock().unwrap();
++        recording.svg = Some(svg);
++        recording.digest = Some(digest);
++        recording.shape_count = shape_count;
++    }
++
++    fn render_offscreen(
++        &mut self,
++        _: BitmapHandle,
++        _: CommandList,
++        _: StageQuality,
++        _: PixelRegion,
++    ) -> Option<Box<dyn SyncHandle>> {
++        panic!("render probe does not support offscreen rendering")
++    }
++
++    fn apply_filter(
++        &mut self,
++        _: BitmapHandle,
++        _: (u32, u32),
++        _: (u32, u32),
++        _: BitmapHandle,
++        _: (i32, i32),
++        _: Filter,
++    ) -> Option<Box<dyn SyncHandle>> {
++        panic!("render probe does not support filters")
++    }
++
++    fn register_bitmap(&mut self, _: Bitmap<'_>) -> Result<BitmapHandle, Error> {
++        panic!("render probe does not support bitmaps")
++    }
++
++    fn update_texture(
++        &mut self,
++        _: &BitmapHandle,
++        _: Bitmap<'_>,
++        _: PixelRegion,
++    ) -> Result<(), Error> {
++        panic!("render probe does not support textures")
++    }
++
++    fn create_empty_texture(
++        &mut self,
++        _: NonZeroU32,
++        _: NonZeroU32,
++    ) -> Result<BitmapHandle, Error> {
++        panic!("render probe does not support textures")
++    }
++
++    fn create_context3d(&mut self, _: Context3DProfile) -> Result<Box<dyn Context3D>, Error> {
++        panic!("render probe does not support Stage3D")
++    }
++
++    fn debug_info(&self) -> Cow<'static, str> {
++        Cow::Borrowed("Sealed AVM1 actual-render command probe")
++    }
++    fn name(&self) -> &'static str {
++        "sealed-avm1-render-probe"
++    }
++    fn set_quality(&mut self, _: StageQuality) {}
++
++    fn compile_pixelbender_shader(
++        &mut self,
++        _: PixelBenderShader,
++    ) -> Result<PixelBenderShaderHandle, Error> {
++        panic!("render probe does not support Pixel Bender")
++    }
++
++    fn run_pixelbender_shader(
++        &mut self,
++        _: PixelBenderShaderHandle,
++        _: &[PixelBenderShaderArgument],
++        _: &PixelBenderTarget,
++    ) -> Result<PixelBenderOutput, Error> {
++        panic!("render probe does not support Pixel Bender")
++    }
++
++    fn resolve_sync_handle(&mut self, _: Box<dyn SyncHandle>, _: RgbaBufRead) -> Result<(), Error> {
++        panic!("render probe does not support sync handles")
++    }
++}
+diff --git a/core/src/player/portable_snapshot/tests.rs b/core/src/player/portable_snapshot/tests.rs
+new file mode 100644
+index 00000000..7cf37867
+--- /dev/null
++++ b/core/src/player/portable_snapshot/tests.rs
+@@ -0,0 +1,565 @@
++use super::*;
++use swf::avm1::types::{Action, Push, Value};
++
++fn fixture(extra: Option<Action<'static>>) -> Vec<u8> {
++    let mut frames = Vec::new();
++    for frame in 0..240 {
++        let mut bytes = Vec::new();
++        let mut writer = swf::avm1::write::Writer::new(&mut bytes, 7);
++        let name = swf::SwfStr::from_utf8_str("s_score");
++        let input = swf::SwfStr::from_utf8_str("s_dx");
++        let mut actions = vec![Action::Push(Push {
++            values: vec![Value::Str(input)],
++        })];
++        // Real Flash Key.isDown calls: right minus left, eight pixels/frame.
++        for key in [39, 37] {
++            actions.extend([
++                Action::Push(Push {
++                    values: vec![
++                        Value::Int(key),
++                        Value::Int(1),
++                        Value::Str(swf::SwfStr::from_utf8_str("Key")),
++                    ],
++                }),
++                Action::GetVariable,
++                Action::Push(Push {
++                    values: vec![Value::Str(swf::SwfStr::from_utf8_str("isDown"))],
++                }),
++                Action::CallMethod,
++                Action::ToNumber,
++            ]);
++        }
++        actions.extend([
++            Action::Subtract,
++            Action::Push(Push {
++                values: vec![Value::Int(8)],
++            }),
++            Action::Multiply,
++            Action::SetVariable,
++            Action::Push(Push {
++                values: vec![Value::Str(name)],
++            }),
++        ]);
++        if frame == 0 {
++            actions.push(Action::Push(Push {
++                values: vec![Value::Int(0)],
++            }));
++        } else {
++            actions.extend([
++                Action::Push(Push {
++                    values: vec![Value::Str(name)],
++                }),
++                Action::GetVariable,
++                Action::Push(Push {
++                    values: vec![Value::Str(input)],
++                }),
++                Action::GetVariable,
++                Action::Add,
++                Action::Push(Push {
++                    values: vec![Value::Int(100)],
++                }),
++                Action::RandomNumber,
++                Action::Add,
++            ]);
++        }
++        actions.extend([
++            Action::SetVariable,
++            Action::Push(Push {
++                values: vec![Value::Str(name)],
++            }),
++            Action::GetVariable,
++            Action::Trace,
++        ]);
++        // Move the actual native MovieClip, not a stand-in world representation.
++        actions.extend([
++            Action::Push(Push {
++                values: vec![
++                    Value::Str(swf::SwfStr::from_utf8_str("clip_avatar")),
++                    Value::Int(0),
++                    Value::Str(swf::SwfStr::from_utf8_str("clip_avatar")),
++                    Value::Int(0),
++                ],
++            }),
++            Action::GetProperty,
++            Action::Push(Push {
++                values: vec![Value::Str(input)],
++            }),
++            Action::GetVariable,
++            Action::Add,
++            Action::Push(Push {
++                values: vec![Value::Int(640)],
++            }),
++            Action::Add,
++            Action::Push(Push {
++                values: vec![Value::Int(640)],
++            }),
++            Action::Modulo,
++            Action::SetProperty,
++        ]);
++        // Collect the gold square on overlap; the real AVM RNG chooses its next x.
++        let text = |s: &'static str| Value::Str(swf::SwfStr::from_utf8_str(s));
++        let push = |values| Action::Push(Push { values });
++        if frame == 0 {
++            actions.extend([
++                push(vec![text("s_collected"), Value::Int(0)]),
++                Action::SetVariable,
++            ]);
++        }
++        actions.extend([
++            push(vec![text("s_delta"), text("clip_avatar"), Value::Int(0)]),
++            Action::GetProperty,
++            push(vec![text("clip_goal"), Value::Int(0)]),
++            Action::GetProperty,
++            Action::Subtract,
++            Action::SetVariable,
++            push(vec![text("s_hit"), text("s_delta")]),
++            Action::GetVariable,
++            push(vec![text("s_delta")]),
++            Action::GetVariable,
++            Action::Multiply,
++            push(vec![Value::Int(1024)]),
++            Action::Less,
++            Action::ToNumber,
++            Action::SetVariable,
++            push(vec![text("s_collected"), text("s_collected")]),
++            Action::GetVariable,
++            push(vec![text("s_hit")]),
++            Action::GetVariable,
++            Action::Add,
++            Action::SetVariable,
++            push(vec![text("s_collected")]),
++            Action::GetVariable,
++            Action::Trace,
++            push(vec![
++                text("clip_goal"),
++                Value::Int(0),
++                text("clip_goal"),
++                Value::Int(0),
++            ]),
++            Action::GetProperty,
++            push(vec![Value::Int(1), text("s_hit")]),
++            Action::GetVariable,
++            Action::Subtract,
++            Action::Multiply,
++            push(vec![Value::Int(500)]),
++            Action::RandomNumber,
++            push(vec![Value::Int(50)]),
++            Action::Add,
++            push(vec![text("s_hit")]),
++            Action::GetVariable,
++            Action::Multiply,
++            Action::Add,
++            Action::SetProperty,
++        ]);
++        if let Some(action) = &extra {
++            actions.push(action.clone());
++        }
++        actions.push(Action::End);
++        for action in actions {
++            writer.write_action(&action).unwrap();
++        }
++        frames.push(bytes);
++    }
++    let mut tags = vec![
++        swf::Tag::SetBackgroundColor(swf::Color {
++            r: 20,
++            g: 27,
++            b: 45,
++            a: 255,
++        }),
++        swf::Tag::DefineShape(Box::new(square(
++            1,
++            swf::Color {
++                r: 64,
++                g: 220,
++                b: 210,
++                a: 255,
++            },
++        ))),
++        swf::Tag::DefineShape(Box::new(square(
++            3,
++            swf::Color {
++                r: 255,
++                g: 185,
++                b: 70,
++                a: 255,
++            },
++        ))),
++        swf::Tag::DefineSprite(swf::Sprite {
++            id: 2,
++            num_frames: 1,
++            tags: vec![place(1, 1, None, 0, 0), swf::Tag::ShowFrame],
++        }),
++        swf::Tag::DefineSprite(swf::Sprite {
++            id: 4,
++            num_frames: 1,
++            tags: vec![place(3, 1, None, 0, 0), swf::Tag::ShowFrame],
++        }),
++        place(2, 1, Some("clip_avatar"), 64, 180),
++        place(4, 2, Some("clip_goal"), 96, 180),
++    ];
++    for actions in &frames {
++        tags.extend([swf::Tag::DoAction(actions), swf::Tag::ShowFrame]);
++    }
++
++    let mut header = swf::Header::default_with_swf_version(7);
++    header.num_frames = frames.len() as u16;
++    header.frame_rate = swf::Fixed8::from_f32(24.0);
++    header.stage_size = swf::Rectangle {
++        x_min: swf::Twips::ZERO,
++        y_min: swf::Twips::ZERO,
++        x_max: swf::Twips::from_pixels(640.0),
++        y_max: swf::Twips::from_pixels(360.0),
++    };
++    let mut bytes = Vec::new();
++    swf::write_swf(&header, &tags, &mut bytes).unwrap();
++    bytes
++}
++
++fn square(id: u16, color: swf::Color) -> swf::Shape {
++    use swf::{PointDelta, ShapeRecord, Twips};
++    let bounds = swf::Rectangle {
++        x_min: Twips::ZERO,
++        y_min: Twips::ZERO,
++        x_max: Twips::new(640),
++        y_max: Twips::new(640),
++    };
++    swf::Shape {
++        version: 3,
++        id,
++        shape_bounds: bounds,
++        edge_bounds: bounds,
++        flags: swf::ShapeFlag::empty(),
++        styles: swf::ShapeStyles {
++            fill_styles: vec![swf::FillStyle::Color(color)],
++            line_styles: vec![],
++        },
++        shape: vec![
++            ShapeRecord::StyleChange(Box::new(swf::StyleChangeData {
++                move_to: Some(swf::Point::default()),
++                fill_style_0: Some(1),
++                fill_style_1: None,
++                line_style: None,
++                new_styles: None,
++            })),
++            ShapeRecord::StraightEdge {
++                delta: PointDelta {
++                    dx: Twips::new(640),
++                    dy: Twips::ZERO,
++                },
++            },
++            ShapeRecord::StraightEdge {
++                delta: PointDelta {
++                    dx: Twips::ZERO,
++                    dy: Twips::new(640),
++                },
++            },
++            ShapeRecord::StraightEdge {
++                delta: PointDelta {
++                    dx: Twips::new(-640),
++                    dy: Twips::ZERO,
++                },
++            },
++            ShapeRecord::StraightEdge {
++                delta: PointDelta {
++                    dx: Twips::ZERO,
++                    dy: Twips::new(-640),
++                },
++            },
++        ],
++    }
++}
++
++fn place(id: u16, depth: u16, name: Option<&'static str>, x: i32, y: i32) -> swf::Tag<'static> {
++    swf::Tag::PlaceObject(Box::new(swf::PlaceObject {
++        version: 2,
++        action: swf::PlaceObjectAction::Place(id),
++        depth,
++        matrix: Some(swf::Matrix {
++            tx: swf::Twips::new(x * 20),
++            ty: swf::Twips::new(y * 20),
++            ..Default::default()
++        }),
++        color_transform: None,
++        ratio: None,
++        name: name.map(swf::SwfStr::from_utf8_str),
++        clip_depth: None,
++        class_name: None,
++        filters: None,
++        background_color: None,
++        blend_mode: None,
++        clip_actions: None,
++        has_image: false,
++        is_bitmap_cached: None,
++        is_visible: None,
++        amf_data: None,
++    }))
++}
++
++#[test]
++fn portable_snapshot_actual_swf_continues_without_replay() {
++    let mut original = SealedAvm1Player::new(&fixture(None), 12345).unwrap();
++    original.set_arrow_keys(false, true).unwrap();
++    for _ in 0..4 {
++        original.step(&[]).unwrap();
++    }
++    let saved = original.checkpoint().unwrap();
++    let state: Checkpoint = serde_json::from_slice(&saved).unwrap();
++    assert_eq!(
++        state.display.root.timeline.as_ref().unwrap().current_frame,
++        4
++    );
++    assert_eq!(state.display.root.children[0].translation[0], 96 * 20);
++    assert_ne!(
++        state.display.root.children[1].translation[0],
++        96 * 20,
++        "collected goal must respawn through real SWF code"
++    );
++    let mut restored = SealedAvm1Player::restore(&saved).unwrap();
++    assert!(
++        restored.take_trace().is_empty(),
++        "restore must execute no frame scripts"
++    );
++    original.take_trace();
++    for input in [4.0, -1.0, 0.0, 8.0, 2.0] {
++        original.set_arrow_keys(input < 0.0, input > 0.0).unwrap();
++        restored.set_arrow_keys(input < 0.0, input > 0.0).unwrap();
++        original.step(&[]).unwrap();
++        restored.step(&[]).unwrap();
++    }
++    assert_eq!(original.take_trace(), restored.take_trace());
++    assert_eq!(
++        original.checkpoint().unwrap(),
++        restored.checkpoint().unwrap()
++    );
++    original.player.lock().unwrap().render();
++    restored.player.lock().unwrap().render();
++    assert_eq!(original.recorder.shape_count(), 2);
++    assert_eq!(original.recorder.digest(), restored.recorder.digest());
++}
++
++#[test]
++fn portable_snapshot_rejects_corrupt_checkpoint_native_state() {
++    let mut player = SealedAvm1Player::new(&fixture(None), 15).unwrap();
++    player.step(&[]).unwrap();
++    let valid: serde_json::Value = serde_json::from_slice(&player.checkpoint().unwrap()).unwrap();
++    for (pointer, replacement) in [
++        ("/format", serde_json::json!("unknown-version")),
++        ("/rng", serde_json::json!(0)),
++        ("/completed_steps", serde_json::json!(0)),
++        (
++            "/display/root/timeline/tag_stream_pos",
++            serde_json::json!(1),
++        ),
++        ("/display/root/flags", serde_json::json!(u32::MAX)),
++        (
++            "/display/root/children/0/character_id",
++            serde_json::json!(65535),
++        ),
++        (
++            "/display/root/children/0/name",
++            serde_json::json!([75, 101, 121]),
++        ),
++        ("/display/root/children/0/depth", serde_json::json!(80)),
++        (
++            "/display/root/children/0/character_id",
++            serde_json::json!(4),
++        ),
++        ("/builtin_pool", serde_json::json!([])),
++    ] {
++        let mut damaged = valid.clone();
++        *damaged.pointer_mut(pointer).unwrap() = replacement;
++        assert!(
++            SealedAvm1Player::restore(&serde_json::to_vec(&damaged).unwrap()).is_err(),
++            "accepted {pointer}"
++        );
++    }
++    assert!(SealedAvm1Player::restore(b"{}").is_err());
++    assert!(SealedAvm1Player::restore(&vec![b' '; MAX_SAVE + 1]).is_err());
++    // A successful save must always fit the restore transport ceiling.
++    player.movie.resize(MAX_SAVE, 0);
++    assert!(player.checkpoint().is_err());
++}
++
++#[test]
++fn portable_snapshot_process_helper() {
++    let Ok(mode) = std::env::var("RUFFLE_SEALED_MODE") else {
++        return;
++    };
++    let directory = std::path::PathBuf::from(std::env::var_os("RUFFLE_SEALED_DIR").unwrap());
++    let mut player = if mode == "produce" {
++        let movie = fixture(None);
++        std::fs::write(directory.join("interactive-world.swf"), &movie).unwrap();
++        let mut player = SealedAvm1Player::new(&movie, 12345).unwrap();
++        player.set_arrow_keys(false, true).unwrap();
++        for _ in 0..4 {
++            player.step(&[]).unwrap();
++        }
++        std::fs::write(
++            directory.join("checkpoint.json"),
++            player.checkpoint().unwrap(),
++        )
++        .unwrap();
++        player.player.lock().unwrap().render();
++        std::fs::write(
++            directory.join("checkpoint.svg"),
++            player.recorder.render_svg(),
++        )
++        .unwrap();
++        player
++    } else {
++        let player =
++            SealedAvm1Player::restore(&std::fs::read(directory.join("checkpoint.json")).unwrap())
++                .unwrap();
++        assert!(player.trace.0.lock().unwrap().is_empty());
++        player
++    };
++    player.take_trace();
++    // Held key survives restart, then release, reverse, and change direction.
++    let controls = std::iter::repeat_n((false, true), 28).chain([
++        (false, true),
++        (false, true),
++        (false, false),
++        (true, false),
++        (true, false),
++        (false, true),
++        (false, true),
++    ]);
++    for (left, right) in controls {
++        player.set_arrow_keys(left, right).unwrap();
++        player.step(&[]).unwrap();
++    }
++    player.player.lock().unwrap().render();
++    assert_eq!(player.recorder.shape_count(), 2);
++    let trace = player.take_trace();
++    assert!(
++        trace
++            .chunks_exact(2)
++            .any(|pair| pair[1].parse::<u32>().unwrap() >= 2),
++        "continuation must collect a target and cause another RNG respawn after the checkpoint"
++    );
++    let state = player.checkpoint().unwrap();
++    let digest = player.recorder.digest();
++    if mode == "produce" {
++        std::fs::write(
++            directory.join("expected-trace.json"),
++            serde_json::to_vec_pretty(&trace).unwrap(),
++        )
++        .unwrap();
++        std::fs::write(directory.join("expected-final.json"), &state).unwrap();
++        std::fs::write(directory.join("expected-render.txt"), &digest).unwrap();
++    } else {
++        assert_eq!(
++            trace,
++            serde_json::from_slice::<Vec<String>>(
++                &std::fs::read(directory.join("expected-trace.json")).unwrap()
++            )
++            .unwrap()
++        );
++        assert_eq!(
++            state,
++            std::fs::read(directory.join("expected-final.json")).unwrap()
++        );
++        assert_eq!(
++            digest,
++            std::fs::read_to_string(directory.join("expected-render.txt")).unwrap()
++        );
++        std::fs::write(directory.join("restored.svg"), player.recorder.render_svg()).unwrap();
++        std::fs::write(directory.join("verified.txt"), "Producer exited before consumer launched. Fresh Player restore executed zero frame scripts. Subsequent trace, heap, RNG, keyboard state, display tree, timeline and actual render command digest match exactly.\n").unwrap();
++    }
++}
++
++#[test]
++fn portable_snapshot_producer_exit_consumer_restore_game_world() {
++    let directory = std::env::var_os("RUFFLE_PORTABLE_EXPORT")
++        .map(std::path::PathBuf::from)
++        .unwrap_or_else(|| {
++            std::env::temp_dir().join(format!("ruffle-sealed-world-{}", std::process::id()))
++        });
++    std::fs::create_dir_all(&directory).unwrap();
++    for mode in ["produce", "consume"] {
++        let result = std::process::Command::new(std::env::current_exe().unwrap())
++            .args([
++                "--exact",
++                "player::portable_snapshot::tests::portable_snapshot_process_helper",
++                "--nocapture",
++            ])
++            .env("RUFFLE_SEALED_MODE", mode)
++            .env("RUFFLE_SEALED_DIR", &directory)
++            .output()
++            .unwrap();
++        assert!(
++            result.status.success(),
++            "{mode} failed: {} {}",
++            String::from_utf8_lossy(&result.stdout),
++            String::from_utf8_lossy(&result.stderr)
++        );
++    }
++}
++
++#[test]
++fn portable_snapshot_rejects_untracked_execution_state() {
++    for action in [
++        Action::GetTime,
++        Action::CallFunction,
++        Action::StartDrag,
++        Action::Push(Push {
++            values: vec![Value::Int(4)],
++        }),
++    ] {
++        assert!(SealedAvm1Player::new(&fixture(Some(action)), 1).is_err());
++    }
++    assert!(SealedAvm1Player::new(&fixture(None), 0).is_err());
++}
++
++#[test]
++fn portable_snapshot_held_keyboard_input_survives_restore() {
++    let mut original = SealedAvm1Player::new(&fixture(None), 8888).unwrap();
++    original.set_arrow_keys(false, true).unwrap();
++    original.step(&[]).unwrap();
++    let bytes = original.checkpoint().unwrap();
++    let mut restored = SealedAvm1Player::restore(&bytes).unwrap();
++    original.take_trace();
++    for _ in 0..4 {
++        original.step(&[]).unwrap();
++        restored.step(&[]).unwrap();
++    }
++    assert_eq!(original.take_trace(), restored.take_trace());
++    assert_eq!(
++        original.checkpoint().unwrap(),
++        restored.checkpoint().unwrap()
++    );
++}
++
++#[test]
++fn portable_snapshot_crosses_timeline_loop_and_preserves_stop() {
++    for (extra, warmup, continuation) in [(None, 239, 5), (Some(Action::Stop), 1, 3)] {
++        let mut original = SealedAvm1Player::new(&fixture(extra), 948).unwrap();
++        original.set_arrow_keys(false, true).unwrap();
++        for _ in 0..warmup {
++            original.step(&[]).unwrap();
++        }
++        let mut restored = SealedAvm1Player::restore(&original.checkpoint().unwrap()).unwrap();
++        original.take_trace();
++        for _ in 0..continuation {
++            original.step(&[]).unwrap();
++            restored.step(&[]).unwrap();
++        }
++        assert_eq!(original.take_trace(), restored.take_trace());
++        assert_eq!(
++            original.checkpoint().unwrap(),
++            restored.checkpoint().unwrap()
++        );
++        // Capture and restore the state after wrapping (including persistent
++        // AVM1 LOOP_QUEUED), rather than only passing through the wrap once.
++        let mut after_wrap = SealedAvm1Player::restore(&original.checkpoint().unwrap()).unwrap();
++        original.take_trace();
++        original.step(&[]).unwrap();
++        after_wrap.step(&[]).unwrap();
++        assert_eq!(original.take_trace(), after_wrap.take_trace());
++        assert_eq!(
++            original.checkpoint().unwrap(),
++            after_wrap.checkpoint().unwrap()
++        );
++    }
++}

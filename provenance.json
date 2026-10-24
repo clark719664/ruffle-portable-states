@@ -2,14 +2,35 @@
   "upstream": "https://github.com/ruffle-rs/ruffle",
   "base_commit": "045db00b393aed22a462d29cb6c25efa26be90a0",
   "local_branch": "research/avm1-snapshot-graph",
-  "patch": "portable-avm1-prerequisites.patch",
-  "patch_sha256": "BFD87E566E2E273B5E9F3168F650D6860557E7A27E55A31CB271B3FDC5CF755F",
+  "patch": "portable-avm1-checkpoint.patch",
+  "patch_sha256": "46FD2F902D93F7B20A0A8CAB615C0809734ECD2B579CA3122C7210C145C860D5",
+  "fixture_sha256": "330E5AD69FB96A1ADE8940FA4B6805C3501CCBF353FC5C00B2A8474770934EB8",
+  "checkpoint_sha256": "2A76A2DAD3BF76556FF59F575407784E3319EF69D50EDFA69AB62A7BA27615EC",
   "test_command": "cargo test -p ruffle_core --lib portable_snapshot --no-default-features -j 1",
   "exit_code": 0,
-  "selected_tests_passed": 7,
+  "selected_tests_passed": 17,
   "selected_tests_failed": 0,
   "filtered_out": 125,
-  "status": "prerequisites only; running SWF checkpoint unsupported",
+  "status": "actual interactive SWF checkpoint and fresh-process continuation verified within sealed whitelist",
+  "verified_properties": [
+    "producer exits before consumer starts",
+    "no frame action replay during restore",
+    "post-checkpoint collection and RNG respawn",
+    "identical continuation trace",
+    "identical full checkpoint",
+    "identical actual render command digest",
+    "held keyboard state",
+    "post-loop restore",
+    "stopped playback",
+    "invalid native state and static identity rejection"
+  ],
   "rustc": "1.99.0 (b940084d7 2026-09-28)",
-  "cargo": "1.99.0 (5f94df478 2026-08-27)"
+  "cargo": "1.99.0 (5f94df478 2026-08-27)",
+  "independent_review": {
+    "selected_tests_passed": 17,
+    "exit_code": 0,
+    "test_binary_sha256": "EA46CF05B6E00950A4ACB239A2C839108C4B57F62732A6B169235EF0915C0F13",
+    "report": "independent-review.md",
+    "unresolved_blockers": 0
+  }
 }

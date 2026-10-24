@@ -1,9 +1,9 @@
-name: Pinned Ruffle heap prerequisite tests
+name: Restricted interactive SWF process checkpoint
 on: [workflow_dispatch]
 permissions:
   contents: read
 jobs:
-  prerequisites:
+  checkpoint:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -14,14 +14,31 @@ jobs:
       - name: Fetch exact upstream base and apply patch
         shell: pwsh
         run: |
-          git clone https://github.com/ruffle-rs/ruffle.git work/ruffle
+          git init work/ruffle
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C work/ruffle checkout 045db00b393aed22a462d29cb6c25efa26be90a0
+          git -C work/ruffle remote add origin https://github.com/ruffle-rs/ruffle.git
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C work/ruffle apply --check ../../portable-avm1-prerequisites.patch
+          git -C work/ruffle fetch --depth 1 origin 045db00b393aed22a462d29cb6c25efa26be90a0
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C work/ruffle apply ../../portable-avm1-prerequisites.patch
+          git -C work/ruffle checkout --detach FETCH_HEAD
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Ordinary heap prerequisite tests only
+          git -C work/ruffle apply --check ../../portable-avm1-checkpoint.patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C work/ruffle apply ../../portable-avm1-checkpoint.patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: All 17 selected process-checkpoint and prerequisite tests
         working-directory: work/ruffle
-        run: cargo test -p ruffle_core --lib portable_snapshot --no-default-features -j 1
+        shell: pwsh
+        env:
+          RUFFLE_PORTABLE_EXPORT: ${{ runner.temp }}/checkpoint-demo
+        run: |
+          cargo test -p ruffle_core --lib portable_snapshot --no-default-features -j 1 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/checkpoint-tests.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Select-String -LiteralPath "$env:RUNNER_TEMP/checkpoint-tests.log" -SimpleMatch 'test result: ok. 17 passed; 0 failed;')) { throw 'Expected 17 selected tests did not run successfully.' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: restricted-checkpoint-demo-and-tests
+          path: |
+            ${{ runner.temp }}/checkpoint-demo/
+            ${{ runner.temp }}/checkpoint-tests.log

@@ -1,0 +1,15 @@
+{
+  "checkpoint_frame": 4,
+  "continued_frame": 39,
+  "checkpoint_avatar_x_twips": 1920,
+  "continued_avatar_x_twips": 6720,
+  "checkpoint_goal_x_twips": 6080,
+  "continued_goal_x_twips": 9480,
+  "trace_lines": 70,
+  "final_collection_count": "2",
+  "checkpoint_rng": 1042284640,
+  "continued_rng": 921098368,
+  "producer_exited_before_consumer": true,
+  "restore_frame_scripts_executed": 0,
+  "trace_full_state_and_draw_commands_equal": true
+}

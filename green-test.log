@@ -1,15 +1,25 @@
    Compiling ruffle_core v0.7.1 (<ruffle-checkout>\core)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.97s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 39.62s
      Running unittests src\lib.rs (target\debug\deps\ruffle_core-5d89497700d6581e.exe)
 
-running 7 tests
+running 17 tests
 test avm1::object::script_object::portable_snapshot_tests::portable_snapshot_process_child ... ok
+test player::portable_snapshot::tests::portable_snapshot_process_helper ... ok
+test display_object::portable_snapshot::tests::rejects_unsupported_flags_and_nonfinite_transforms ... ok
+test display_object::portable_snapshot::tests::rejects_duplicate_depths_and_nonroot_root_flags ... ok
 test avm_rng::portable_snapshot_tests::portable_snapshot_rng_continues_without_reseeding ... ok
 test avm1::object::script_object::portable_snapshot_tests::portable_snapshot_rejects_native_and_virtual_properties ... ok
+test display_object::portable_snapshot::tests::transport_preserves_exact_transform_bits ... ok
 test avm1::object::script_object::portable_snapshot_tests::portable_snapshot_rejects_watchers_interfaces_and_corrupt_references ... ok
 test avm1::object::script_object::portable_snapshot_tests::portable_snapshot_roundtrip_fresh_arena_preserves_graph_and_bits ... ok
 test avm1::object::script_object::portable_snapshot_tests::portable_snapshot_survives_producer_exit_and_fresh_process_restore ... ok
+test player::portable_snapshot::tests::portable_snapshot_rejects_untracked_execution_state ... ok
 test avm1::object::script_object::portable_snapshot_tests::portable_snapshot_rejects_actual_player_root_instead_of_claiming_checkpoint ... ok
+test player::portable_snapshot::tests::portable_snapshot_actual_swf_continues_without_replay ... ok
+test player::portable_snapshot::tests::portable_snapshot_held_keyboard_input_survives_restore ... ok
+test player::portable_snapshot::tests::portable_snapshot_producer_exit_consumer_restore_game_world ... ok
+test player::portable_snapshot::tests::portable_snapshot_crosses_timeline_loop_and_preserves_stop ... ok
+test player::portable_snapshot::tests::portable_snapshot_rejects_corrupt_checkpoint_native_state ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 0.14s
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 3.71s
 

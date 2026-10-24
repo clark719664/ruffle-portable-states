@@ -10,3 +10,15 @@
 - Native/MovieClip Player roots intentionally fail rather than producing incomplete execution saves.
 - Source is on branch research/avm1-snapshot-graph; new source files marked intent-to-add for complete patch export.
 - Final targeted cargo run exited0:7 selected tests passed,0 failed,125 filtered out; includes subprocess helper entry and real producer-exit/consumer-restore test. Formatting and git diff whitespace checks passed. Patch validated against a temporary HEAD index with git apply --cached --check.
+- Continuation: real sealed Player API and tag/opcode/operand capability validation added after missing-API red baseline.
+- Static display-tree direct restore added: shape assets, native transforms/caches, MovieClip timeline positions/flags and AVM1 execution ordering.
+- Added actual SWF fixture with keyboard-driven avatar, collectible goal, RNG respawn and numeric state; no substitute runtime.
+- First runtime failure exposed inherited builtin constant pool (167 strings); now verify its exact reconstruction rather than incorrectly requiring empty pool.
+- Current runtime check reaches display capture but rejects a native default; investigating the exact field before relaxing any invariant.
+- Final execution verification: 17 targeted tests passed, 0 failed, 125 filtered out; producer exits before fresh consumer starts.
+- Later collection after restore is asserted: native avatar movement triggers another goal collection/RNG respawn; subsequent trace, complete snapshot and actual render commands equal uninterrupted reference.
+- Added post-loop fresh restore and stopped playback tests; preserved legitimate persistent AVM1 LOOP_QUEUED flag based on source semantics.
+- Independent review identified checkpoint namespace/topology and output-size gaps; fixed static placement manifest validation, protected-name parity, 8MiB save/restore cap, and corresponding rejection tests.
+- Exports include actual SWF, generator excerpt/license, checkpoint, exact reference state/trace/render digest, and actual-render-command SVGs.
+- Scope remains the explicit sealed whitelist; arbitrary Flash games/functions/native resources are not claimed supported.
+- Final independent review: frozen test binary rerun, all 17 passed with exit 0; no unresolved blocker for the sealed subset. Review report exported as independent-review.md.

@@ -1,0 +1,14 @@
+   Compiling ruffle_core v0.7.1 (<ruffle-checkout>\core)
+error[E0599]: no method named `set_arrow_keys` found for struct `player::portable_snapshot::SealedAvm1Player` in the current scope
+   --> core\src\player\portable_snapshot\tests.rs:123:14
+    |
+123 |     original.set_arrow_keys(false, true).unwrap();
+    |              ^^^^^^^^^^^^^^ method not found in `player::portable_snapshot::SealedAvm1Player`
+    |
+   ::: core\src\player\portable_snapshot.rs:50:1
+    |
+ 50 | pub struct SealedAvm1Player {
+    | --------------------------- method `set_arrow_keys` not found for this struct
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `ruffle_core` (lib test) due to 1 previous error
